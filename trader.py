@@ -1,5 +1,6 @@
 from datamodel import OrderDepth, TradingState, Order
 from typing import List, Dict, Any
+import json
 
 
 class Logger:
@@ -63,31 +64,39 @@ class Trader:
                     orders.append(Order(product, best_bid, -amount))
                     position -= amount
 
-                if position < LIMIT and best_bid<fair:
-                    orders.append(Order(product, best_bid+1, LIMIT-position))
+                if position < LIMIT and best_bid < fair:
+                    orders.append(Order(product, best_bid + 1, LIMIT - position))
 
-                if position > -LIMIT and best_ask>fair:
-                    orders.append(Order(product, best_ask-1, -position-LIMIT))
+                if position > -LIMIT and best_ask > fair:
+                    orders.append(Order(product, best_ask - 1, -LIMIT - position))
 
             if product == "TOMATOES":
                 spread = best_ask - best_bid
-
+                bid_spike = False
+                ask_spike = False
                 if spread <= 7:
                     prev_order = self.price_history["TOMATOES"][-1]
                     prev_bid = prev_order[0]
                     prev_ask = prev_order[1]
-                    if best_bid - prev_bid >= 5 and position > -5:
+                    if best_bid - prev_bid >= 5:
+                        bid_spike = True
+                    elif prev_ask - best_ask >= 5:
+                        ask_spike = True
+
+                if bid_spike:
+                    if position > -5:
                         amount = best_bid_amount
                         orders.append(Order(product, best_bid, -amount))
                         position -= amount
-                    elif prev_ask - best_ask >= 5 and position < 5:
+                elif position < LIMIT:
+                    orders.append(Order(product, best_bid + 1, LIMIT - position))
+
+                if ask_spike:
+                    if position < 5:
                         amount = -best_ask_amount
                         orders.append(Order(product, best_ask, amount))
                         position += amount
-
-                if position < LIMIT:
-                    orders.append(Order(product, best_bid + 1, LIMIT - position))
-                if position > -LIMIT:
+                elif position > -LIMIT:
                     orders.append(Order(product, best_ask - 1, -LIMIT - position))
 
             self.price_history[product].append([best_bid, best_ask])
