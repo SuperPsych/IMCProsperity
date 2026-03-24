@@ -6,7 +6,7 @@ class Trader:
 
     POSITION_LIMIT = {
         "EMERALDS": 80,
-        "TOMATOES": 35
+        "TOMATOES": 50
     }
 
     def __init__(self):
@@ -52,11 +52,11 @@ class Trader:
                     prev_order = self.price_history["TOMATOES"][-1]
                     prev_bid = prev_order[0]
                     prev_ask = prev_order[1]
-                    if best_bid - prev_bid >= 5 and position > 0:
+                    if best_bid - prev_bid >= 5 and position > -5:
                         amount = best_bid_amount
                         orders.append(Order(product, best_bid, -amount))
                         position -= amount
-                    elif prev_ask - best_ask >= 5 and position < 0:
+                    elif prev_ask - best_ask >= 5 and position < 5:
                         amount = -best_ask_amount
                         orders.append(Order(product, best_ask, amount))
                         position += amount
