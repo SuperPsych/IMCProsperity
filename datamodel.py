@@ -12,7 +12,6 @@ ObservationValue = int
 
 
 class Listing:
-
     def __init__(self, symbol: Symbol, product: Product, denomination: Product):
         self.symbol = symbol
         self.product = product
@@ -28,8 +27,8 @@ class ConversionObservation:
         self.transportFees = transportFees
         self.exportTariff = exportTariff
         self.importTariff = importTariff
-        self.sugarPrice = sugarPrice
-        self.sunlightIndex = sunlightIndex
+        #self.sugarPrice = sugarPrice
+        #self.sunlightIndex = sunlightIndex
 
 
 class Observation:
