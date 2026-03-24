@@ -24,10 +24,14 @@ class Trader:
                 best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
 
                 if best_ask == fair and position<0:
-                    orders.append(Order(product, best_ask, -position))
+                    amount = min(-position, -best_ask_amount)
+                    orders.append(Order(product, best_ask, amount))
+                    position += amount
 
                 elif best_bid == fair and position>0:
-                    orders.append(Order(product, best_bid, -position))
+                    amount = min(position, best_bid_amount)
+                    orders.append(Order(product, best_bid, -amount))
+                    position -= amount
 
                 if position < self.POSITION_LIMIT[product] and best_bid<fair:
                     orders.append(Order(product, best_bid+1, self.POSITION_LIMIT[product]-position))
@@ -40,10 +44,10 @@ class Trader:
                 best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
 
                 if position < self.POSITION_LIMIT[product]:
-                    orders.append(Order(product, best_bid + 1, 10))
+                    orders.append(Order(product, best_bid + 1, 6))
 
                 if position > -self.POSITION_LIMIT[product]:
-                    orders.append(Order(product, best_ask - 1, -10))
+                    orders.append(Order(product, best_ask - 1, -6))
 
             result[product] = orders
 
