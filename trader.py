@@ -27,9 +27,12 @@ logger = Logger()
 class Trader:
 
     POSITION_LIMIT = {
-        "EMERALDS": 35,
-        "TOMATOES": 35
+        "EMERALDS": 80,
+        "TOMATOES": 50
     }
+
+    def __init__(self):
+        self.price_history = {"EMERALDS": [], "TOMATOES": []}
 
     def run(self, state: TradingState):
         logger.print("timestamp:", state.timestamp)
@@ -42,33 +45,52 @@ class Trader:
 
             position = state.position.get(product, 0)
 
+            best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
+            best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+
+            LIMIT = self.POSITION_LIMIT[product]
+
             if product == "EMERALDS":
                 fair = 10000
-                best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
-                best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
 
                 if best_ask == fair and position<0:
-                    orders.append(Order(product, best_ask, -position))
+                    amount = min(-position, -best_ask_amount)
+                    orders.append(Order(product, best_ask, amount))
+                    position += amount
 
                 elif best_bid == fair and position>0:
-                    orders.append(Order(product, best_bid, -position))
+                    amount = min(position, best_bid_amount)
+                    orders.append(Order(product, best_bid, -amount))
+                    position -= amount
 
-                if position < self.POSITION_LIMIT[product] and best_bid<fair:
-                    orders.append(Order(product, best_bid+1, self.POSITION_LIMIT[product]-position))
+                if position < LIMIT and best_bid<fair:
+                    orders.append(Order(product, best_bid+1, LIMIT-position))
 
-                if position > -self.POSITION_LIMIT[product] and best_ask>fair:
-                    orders.append(Order(product, best_ask-1, -position-self.POSITION_LIMIT[product]))
+                if position > -LIMIT and best_ask>fair:
+                    orders.append(Order(product, best_ask-1, -position-LIMIT))
 
             if product == "TOMATOES":
-                best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
-                best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+                spread = best_ask - best_bid
 
-                if position < self.POSITION_LIMIT[product]:
-                    orders.append(Order(product, best_bid + 1, 10))
+                if spread <= 7:
+                    prev_order = self.price_history["TOMATOES"][-1]
+                    prev_bid = prev_order[0]
+                    prev_ask = prev_order[1]
+                    if best_bid - prev_bid >= 5 and position > -5:
+                        amount = best_bid_amount
+                        orders.append(Order(product, best_bid, -amount))
+                        position -= amount
+                    elif prev_ask - best_ask >= 5 and position < 5:
+                        amount = -best_ask_amount
+                        orders.append(Order(product, best_ask, amount))
+                        position += amount
 
-                if position > -self.POSITION_LIMIT[product]:
-                    orders.append(Order(product, best_ask - 1, -10))
+                if position < LIMIT:
+                    orders.append(Order(product, best_bid + 1, LIMIT - position))
+                if position > -LIMIT:
+                    orders.append(Order(product, best_ask - 1, -LIMIT - position))
 
+            self.price_history[product].append([best_bid, best_ask])
             result[product] = orders
 
         traderData = ""
