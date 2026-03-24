@@ -5,9 +5,12 @@ from typing import List, Dict
 class Trader:
 
     POSITION_LIMIT = {
-        "EMERALDS": 35,
+        "EMERALDS": 80,
         "TOMATOES": 35
     }
+
+    def __init__(self):
+        self.price_history = {"TOMATOES": []}
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
@@ -44,10 +47,10 @@ class Trader:
                 best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
 
                 if position < self.POSITION_LIMIT[product]:
-                    orders.append(Order(product, best_bid + 1, 6))
+                    orders.append(Order(product, best_bid + 1, self.POSITION_LIMIT[product]-position))
 
                 if position > -self.POSITION_LIMIT[product]:
-                    orders.append(Order(product, best_ask - 1, -6))
+                    orders.append(Order(product, best_ask - 1, -position-self.POSITION_LIMIT[product]))
 
             result[product] = orders
 
