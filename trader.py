@@ -1,48 +1,51 @@
-from datamodel import OrderDepth, UserId, TradingState, Order
-from typing import List
-import string
+from datamodel import OrderDepth, TradingState, Order
+from typing import List, Dict
 
 
 class Trader:
 
-    def bid(self):
-        return 15
+    POSITION_LIMIT = {
+        "EMERALDS": 80,
+        "TOMATOES": 80
+    }
 
     def run(self, state: TradingState):
-        """Only method required. It takes all buy and sell orders for all
-        symbols as an input, and outputs a list of orders to be sent."""
+        result: Dict[str, List[Order]] = {}
 
-        print("traderData: " + state.traderData)
-        print("Observations: " + str(state.observations))
-
-        # Orders to be placed on exchange matching engine
-        result = {}
         for product in state.order_depths:
             order_depth: OrderDepth = state.order_depths[product]
             orders: List[Order] = []
-            acceptable_price = 7500  # Participant should calculate this value
-            print("Acceptable price : " + str(acceptable_price))
-            print("Buy Order depth : " + str(len(order_depth.buy_orders)) + ", Sell order depth : " + str(
-                len(order_depth.sell_orders)))
 
-            if len(order_depth.sell_orders) != 0:
+            position = state.position.get(product, 0)
+
+            if product == "EMERALDS":
+                fair = 10000
                 best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
-                if int(best_ask) < acceptable_price:
-                    print("BUY", str(-best_ask_amount) + "x", best_ask)
-                    orders.append(Order(product, best_ask, -best_ask_amount))
-
-            if len(order_depth.buy_orders) != 0:
                 best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
-                if int(best_bid) > acceptable_price:
-                    print("SELL", str(best_bid_amount) + "x", best_bid)
-                    orders.append(Order(product, best_bid, -best_bid_amount))
+                if best_ask == fair and position<0:
+                    orders.append(Order(product, -best_ask, position))
+
+                elif best_bid == fair and position>0:
+                    orders.append(Order(product, -best_bid, position))
+
+                if position < self.POSITION_LIMIT[product] and best_bid<fair:
+                    orders.append(Order(product, best_bid+1, self.POSITION_LIMIT[product]-position))
+
+                if position > -self.POSITION_LIMIT[product] and best_ask>fair:
+                    orders.append(Order(product, best_ask-1, self.POSITION_LIMIT[product]-position))
+
+            if product == "TOMATOES":
+                best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
+                best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+
+                if position < self.POSITION_LIMIT[product]:
+                    orders.append(Order(product, best_bid + 1, 5))
+
+                if position > -self.POSITION_LIMIT[product]:
+                    orders.append(Order(product, best_ask - 1, -5))
 
             result[product] = orders
 
-        # String value holding Trader state data required.
-        # It will be delivered as TradingState.traderData on next execution.
-        traderData = "SAMPLE"
-
-        # Sample conversion request. Check more details below.
-        conversions = 1
+        traderData = ""
+        conversions = 0
         return result, conversions, traderData
