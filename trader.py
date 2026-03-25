@@ -78,9 +78,9 @@ class Trader:
                     prev_order = self.price_history["TOMATOES"][-1]
                     prev_bid = prev_order[0]
                     prev_ask = prev_order[1]
-                    if best_bid - prev_bid >= 5:
+                    if best_bid - prev_bid > 5:
                         bid_spike = True
-                    elif prev_ask - best_ask >= 5:
+                    elif prev_ask - best_ask > 5:
                         ask_spike = True
 
                 if bid_spike:
