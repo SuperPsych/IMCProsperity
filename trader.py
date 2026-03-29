@@ -84,14 +84,6 @@ PARAMS = {
 # ─────────────────────────────────────────────────────────────────────────────
  
  
-# ── Minimal logger shim (replace with competition logger if needed) ───────────
-class Logger:
-    def print(self, *args): pass
-    def flush(self, state, orders, conversions, traderData): pass
- 
-logger = Logger()
-# ─────────────────────────────────────────────────────────────────────────────
- 
  
 class Trader:
  
