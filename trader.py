@@ -74,6 +74,7 @@ class Logger:
 
         self.logs = ""
 
+
 logger = Logger()
 
 PARAMS = {
@@ -81,45 +82,45 @@ PARAMS = {
     "TOMATOES_SPIKE_THRESHOLD": 5,
     "TOMATOES_SPIKE_POSITION_GUARD": 20,
 }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
- 
- 
- 
+
+
 class Trader:
- 
     POSITION_LIMIT = {
         "EMERALDS": 80,
         "TOMATOES": PARAMS["TOMATOES_POSITION_LIMIT"],
     }
- 
+
     def __init__(self):
         self.price_history = {"EMERALDS": [], "TOMATOES": []}
- 
+
     def run(self, state: TradingState):
         logger.print("timestamp:", state.timestamp)
         logger.print("positions:", state.position)
         result: Dict[str, List[Order]] = {}
- 
+
         # Pull live params so grid search injections take effect
-        tomato_limit      = PARAMS["TOMATOES_POSITION_LIMIT"]
-        spike_thresh      = PARAMS["TOMATOES_SPIKE_THRESHOLD"]
-        spike_pos_guard   = PARAMS["TOMATOES_SPIKE_POSITION_GUARD"]
- 
+        tomato_limit = PARAMS["TOMATOES_POSITION_LIMIT"]
+        spike_thresh = PARAMS["TOMATOES_SPIKE_THRESHOLD"]
+        spike_pos_guard = PARAMS["TOMATOES_SPIKE_POSITION_GUARD"]
+
         for product in state.order_depths:
             order_depth: OrderDepth = state.order_depths[product]
             orders: List[Order] = []
- 
+
             position = state.position.get(product, 0)
- 
+
             best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
             best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
- 
+
             LIMIT = PARAMS["TOMATOES_POSITION_LIMIT"] if product == "TOMATOES" else self.POSITION_LIMIT[product]
- 
+
             # ── EMERALDS ──────────────────────────────────────────────────────
             if product == "EMERALDS":
                 fair = 10000
- 
+
                 if best_ask == fair and position < 0:
                     amount = min(-position, -best_ask_amount)
                     orders.append(Order(product, best_ask, amount))
@@ -128,25 +129,30 @@ class Trader:
                     amount = min(position, best_bid_amount)
                     orders.append(Order(product, best_bid, -amount))
                     position -= amount
- 
+
                 if position < LIMIT and best_bid < fair:
                     orders.append(Order(product, best_bid + 1, LIMIT - position))
                 if position > -LIMIT and best_ask > fair:
                     orders.append(Order(product, best_ask - 1, -LIMIT - position))
- 
+
             # ── TOMATOES ──────────────────────────────────────────────────────
             if product == "TOMATOES":
                 spread = best_ask - best_bid
                 bid_spike = False
                 ask_spike = False
- 
+
                 if spread <= 7 and self.price_history["TOMATOES"]:
                     prev_bid, prev_ask = self.price_history["TOMATOES"][-1]
-                    if best_bid - prev_bid > spike_thresh:
-                        bid_spike = True
-                    elif prev_ask - best_ask > spike_thresh:
+                    if best_bid - prev_bid >= 5:
+                        fair = best_ask - 7
+                        if best_bid >= fair:
+                            bid_spike = True
+                    elif prev_ask - best_ask >= 5:
                         ask_spike = True
- 
+                        fair = best_bid + 7
+                        if best_ask <= fair:
+                            ask_spike = True
+
                 if bid_spike:
                     if position > -spike_pos_guard:
                         amount = best_bid_amount
@@ -154,7 +160,7 @@ class Trader:
                         position -= amount
                 elif position < LIMIT:
                     orders.append(Order(product, best_bid + 1, LIMIT - position))
- 
+
                 if ask_spike:
                     if position < spike_pos_guard:
                         amount = -best_ask_amount
@@ -162,12 +168,11 @@ class Trader:
                         position += amount
                 elif position > -LIMIT:
                     orders.append(Order(product, best_ask - 1, -LIMIT - position))
- 
+
             self.price_history[product].append([best_bid, best_ask])
             result[product] = orders
- 
+
         traderData = ""
         conversions = 0
         logger.flush(state, orders, conversions, traderData)
         return result, conversions, traderData
- 
