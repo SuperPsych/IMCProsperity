@@ -12,7 +12,7 @@ from grid_search import grid_search
 
 results = grid_search(
     trader_file="trader.py",
-    round_num=0,
+    days="0",          # full round 0  (or "0-1" for a single day, or ["0-1", "0-2"] for multiple)
     product="TOMATOES",
     param_grid={
         "TOMATOES_POSITION_LIMIT":       [30, 40, 50, 60],
@@ -55,9 +55,16 @@ def _inject_params(source: str, overrides: dict) -> str:
 
 _PNL_RE = re.compile(r"^([A-Z_]+):\s*([\d,]+)", re.MULTILINE)
 
-def _run_backtest(trader_path: Path, round_num: int) -> dict[str, int]:
+def _normalise_days(days: str | int | list) -> list[str]:
+    """Accept int, str, or list and return a list of day strings for the CLI."""
+    if isinstance(days, list):
+        return [str(d) for d in days]
+    return [str(days)]
+
+def _run_backtest(trader_path: Path, days: str | int | list) -> dict[str, int]:
     proc = subprocess.run(
-        ["prosperity4bt", str(trader_path), str(round_num)],
+        ["prosperity4bt", str(trader_path), "--no-progress", "--no-out",
+         *_normalise_days(days)],
         capture_output=True, text=True,
     )
     output = proc.stdout + proc.stderr
@@ -152,13 +159,26 @@ def _plot_bar(results: list[dict], key: str, product: str) -> None:
 
 def grid_search(
     trader_file: str,
-    round_num: int,
+    days: str | int | list,
     product: str,
     param_grid: dict[str, list[Any]],
     top_n: int = 5,
 ) -> list[dict]:
+    """
+    Parameters
+    ----------
+    trader_file : path to the trader .py file
+    days        : day(s) to backtest — int/str for a single spec (e.g. 0 or "0-1"),
+                  or a list for multiple (e.g. ["0-1", "0-2"]).
+                  Formats mirror the prosperity4bt CLI: <round> or <round>-<day>.
+    product     : product name to extract PnL for
+    param_grid  : dict of param_name → list of values to search
+    top_n       : how many top results to print
+    """
     trader_path = Path(trader_file).resolve()
     original_source = trader_path.read_text()   # read once, never write back
+
+    day_specs = _normalise_days(days)
 
     # Snapshot the baseline PARAMS from the file right now.
     # We print it so you can verify the non-searched params are what you expect.
@@ -174,7 +194,7 @@ def grid_search(
 
     keys   = list(param_grid.keys())
     combos = list(itertools.product(*param_grid.values()))
-    print(f"Grid search: {len(combos)} combos | product={product} | round={round_num}\n")
+    print(f"Grid search: {len(combos)} combos | product={product} | days={' '.join(day_specs)}\n")
 
     results = []
 
@@ -194,7 +214,7 @@ def grid_search(
             tmp_path.write_text(_inject_params(original_source, overrides))
 
             try:
-                pnl = _run_backtest(tmp_path, round_num).get(product, 0)
+                pnl = _run_backtest(tmp_path, day_specs).get(product, 0)
             except Exception as e:
                 print(f"  [{i}/{len(combos)}] {overrides}  →  ERROR: {e}")
                 pnl = float("nan")
