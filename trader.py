@@ -77,22 +77,10 @@ class Logger:
 logger = Logger()
 
 PARAMS = {
-    "TOMATOES_POSITION_LIMIT": 60,
+    "TOMATOES_POSITION_LIMIT": 64,
     "TOMATOES_SPIKE_THRESHOLD": 5,
-    "TOMATOES_SPIKE_POSITION_GUARD": 20,
-}
-# ─────────────────────────────────────────────────────────────────────────────
- 
- 
-# ── Minimal logger shim (replace with competition logger if needed) ───────────
-class Logger:
-    def print(self, *args): pass
-    def flush(self, state, orders, conversions, traderData): pass
- 
-logger = Logger()
-# ─────────────────────────────────────────────────────────────────────────────
- 
- 
+    "TOMATOES_SPIKE_POSITION_GUARD": 24,
+} 
 class Trader:
  
     POSITION_LIMIT = {

@@ -1,0 +1,2 @@
+tomatoes_limit,spike_threshold,final_pnl,max_drawdown,valid,note
+50,5,,,False,backtester exited with code 1 | Backtesting /tmp/grid_bt_50_5_o7flf81b/utkarsh_trader.py on round 0 day -2
