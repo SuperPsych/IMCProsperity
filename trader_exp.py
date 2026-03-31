@@ -51,58 +51,61 @@ class Trader:
 
             LIMIT = self.POSITION_LIMIT[product]
             BUY_MAX = LIMIT - position
-            SELL_MAX = -LIMIT - position
+            SELL_MAX = LIMIT + position
 
             if product == "EMERALDS":
                 fair = 10000
 
-                if best_bid == fair and position > 0:
-                    amount = min(position, best_bid_amount)
-                    orders.append(Order(product, best_bid, -amount))
-                    SELL_MAX += amount
-
-                if best_ask == fair and position < 0:
-                    amount = min(-position, -best_ask_amount)
+                if best_ask == fair and position<0:
+                    amount = min(-position, -best_ask_amount) # amount > 0, we are lifting the ask
                     orders.append(Order(product, best_ask, amount))
-                    BUY_MAX += position
+                    BUY_MAX -= amount
+
+                elif best_bid == fair and position>0:
+                    amount = min(position, best_bid_amount) # amount > 0 (-amount < 0), we are hitting the bid
+                    orders.append(Order(product, best_bid, -amount))
+                    SELL_MAX -= amount
 
                 if BUY_MAX > 0 and best_bid < fair:
                     orders.append(Order(product, best_bid + 1, BUY_MAX))
 
-                if SELL_MAX < 0 and best_ask > fair:
-                    orders.append(Order(product, best_ask - 1, SELL_MAX))
+                if SELL_MAX > 0 and best_ask > fair:
+                    orders.append(Order(product, best_ask - 1, -SELL_MAX))
 
             if product == "TOMATOES":
                 spread = best_ask - best_bid
                 bid_spike = False
                 ask_spike = False
-                if spread <= 8:
+                if spread <= 7:
                     prev_order = self.price_history["TOMATOES"][-1]
                     prev_bid = prev_order[0]
                     prev_ask = prev_order[1]
-                    if best_bid - prev_bid > 5:
-                        bid_spike = True
-                    elif prev_ask - best_ask > 5:
+                    if best_bid - prev_bid >= 5:
+                        fair = best_ask - 7
+                        if best_bid >= fair:
+                            bid_spike = True
+                    elif prev_ask - best_ask >= 5:
                         ask_spike = True
+                        fair = best_bid + 7
+                        if best_ask <= fair:
+                            ask_spike = True
 
 
-                if bid_spike and position > 0:
-                    amount = min(position, best_bid_amount)
-                    orders.append(Order(product, best_bid, -amount))
-                    SELL_MAX += amount
-
-                if ask_spike and position < 0:
-                    amount = min(-position, -best_ask_amount)
-                    orders.append(Order(product, best_ask, amount))
-                    BUY_MAX += position
-
-
-                if not bid_spike and BUY_MAX > 0:
+                if bid_spike:
+                    if position > 0:
+                        amount = min(position,best_bid_amount)
+                        orders.append(Order(product, best_bid, -amount)) # selling to best bid
+                        SELL_MAX -= amount
+                elif BUY_MAX > 0:
                     orders.append(Order(product, best_bid + 1, BUY_MAX))
 
-                if not ask_spike and SELL_MAX < 0:
-                    orders.append(Order(product, best_ask - 1, SELL_MAX))
-
+                if ask_spike:
+                    if position < 0:
+                        amount = min(-position,-best_ask_amount)
+                        orders.append(Order(product, best_ask, amount)) # buying from best ask
+                        SELL_MAX -= amount
+                elif SELL_MAX > 0:
+                    orders.append(Order(product, best_ask - 1, -SELL_MAX))
 
             self.price_history[product].append([best_bid, best_ask])
             result[product] = orders
