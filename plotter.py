@@ -16,77 +16,78 @@ class Plotter():
             "symbol" : "product"
         })
         self.products = list(self.prices["product"].unique())
-    
+
+class Plotter:
+
     def __init__(self, directory_path):
         # Regex patterns to match files and extract the day number
         price_pattern = re.compile(r"prices_round_\d+_day_(-?\d+)\.csv$")
         trade_pattern = re.compile(r"trades_round_\d+_day_(-?\d+)\.csv$")
-        
-        price_files = []
-        trade_files = []
+
+        price_files = {}
+        trade_files = {}
+
+        # Discover files and map them by day
         for filename in os.listdir(directory_path):
             price_match = price_pattern.match(filename)
             trade_match = trade_pattern.match(filename)
 
             if price_match:
                 day = int(price_match.group(1))
-                price_files.append((day, os.path.join(directory_path, filename)))
+                price_files[day] = os.path.join(directory_path, filename)
             elif trade_match:
                 day = int(trade_match.group(1))
-                trade_files.append((day, os.path.join(directory_path, filename)))
+                trade_files[day] = os.path.join(directory_path, filename)
 
-        price_files.sort(key=lambda x: x[0])
-        trade_files.sort(key=lambda x: x[0])
+        # Sort all unique days present in either prices or trades
+        days_sorted = sorted(set(price_files.keys()) | set(trade_files.keys()))
 
-        def load_and_concat(file_list, rename_symbol=False):
-            dfs = []
-            timestamp_offset = 0
+        prices_dfs = []
+        trades_dfs = []
+        cumulative_offset = 0
 
-            for _, filepath in file_list:
-                df = pd.read_csv(filepath, delimiter=";")
+        for day in days_sorted:
+            # --- Load prices for the day ---
+            day_max_timestamp = 0
+            if day in price_files:
+                df_prices = pd.read_csv(price_files[day], delimiter=";")
+                df_prices["timestamp"] += cumulative_offset
+                prices_dfs.append(df_prices)
 
-                # Rename column for trades if necessary
-                if rename_symbol and "symbol" in df.columns:
-                    df = df.rename(columns={"symbol": "product"})
+                # Determine the max timestamp for this day
+                if "timestamp" in df_prices.columns:
+                    # Subtract the offset to get the original max timestamp
+                    day_max_timestamp = (
+                        df_prices["timestamp"].max() - cumulative_offset
+                    )
 
-                # Adjust timestamps to ensure continuity
-                if "timestamp" in df.columns:
-                    df["timestamp"] += timestamp_offset
-                    max_ts = df["timestamp"].max()
-                    # Assuming timestamps increment by 100 and restart at 0 each day
-                    timestamp_offset = max_ts + 100
+            # --- Load trades for the day ---
+            if day in trade_files:
+                df_trades = pd.read_csv(trade_files[day], delimiter=";")
+                if "symbol" in df_trades.columns:
+                    df_trades = df_trades.rename(columns={"symbol": "product"})
+                df_trades["timestamp"] += cumulative_offset
+                trades_dfs.append(df_trades)
 
-                dfs.append(df)
+            # Update the cumulative offset for the next day
+            # Add 100 because timestamps increase in increments of 100
+            cumulative_offset += day_max_timestamp + 100
 
-            if dfs:
-                return pd.concat(dfs, ignore_index=True)
-            else:
-                return pd.DataFrame()
+        # Concatenate all dataframes
+        self.prices = (
+            pd.concat(prices_dfs, ignore_index=True)
+            if prices_dfs else pd.DataFrame()
+        )
+        self.trades = (
+            pd.concat(trades_dfs, ignore_index=True)
+            if trades_dfs else pd.DataFrame()
+        )
 
-        self.prices = load_and_concat(price_files)
-        self.trades = load_and_concat(trade_files, rename_symbol=True)
+        # Extract unique products
         if not self.prices.empty and "product" in self.prices.columns:
-            self.products = list(self.prices["product"].unique())
+            self.products = sorted(self.prices["product"].unique())
         else:
             self.products = []
-
-
-    def _offset_trades(self, day_offset, days_sorted):
-        """Offset trade timestamps when trades CSV lacks a day column."""
-        # Each file was read in order matching prices files.  Trades within
-        # each original file share the same 0–999_900 range, so we group by
-        # file boundary.  Since we concat'd in the same order as prices_path,
-        # and days_sorted is the sorted unique day values, we assign each
-        # batch of trades (separated by timestamp resets) to the next day.
-        offsets = []
-        prev_ts = -1
-        day_idx = 0
-        for ts in self.trades["timestamp"]:
-            if ts < prev_ts:
-                day_idx = min(day_idx + 1, len(days_sorted) - 1)
-            offsets.append(day_offset[days_sorted[day_idx]])
-            prev_ts = ts
-        self.trades["timestamp"] += offsets
 
     def _plot_interval(self, product, t0, t1, renderer=None, ymin=None, ymax=None):
         # --- filter by product ---
