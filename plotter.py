@@ -16,7 +16,7 @@ class Plotter():
     def _plot_interval(self, product, t0, t1):
         # --- filter by product ---
         ob = self.prices[self.prices["product"] == product]
-        tr = self.trades[self.trades["product"] == product]
+        tr = self.trades[self.trades["symbol"] == product]
 
         # --- filter by timestamp ---
         curr_order_book = ob[
@@ -38,7 +38,7 @@ class Plotter():
         fig = go.Figure()
 
         # --- mid ---
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Scattergl(
             x=idx,
             y=curr_order_book["mid_price"],
             name="mid",
@@ -47,7 +47,7 @@ class Plotter():
 
         # --- bids ---
         for i in range(1, 4):
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=idx,
                 y=curr_order_book[f"bid_price_{i}"],
                 name=f"bid_price_{i}",
@@ -61,7 +61,7 @@ class Plotter():
 
         # --- asks ---
         for i in range(1, 4):
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=idx,
                 y=curr_order_book[f"ask_price_{i}"],
                 name=f"ask_price_{i}",
@@ -89,7 +89,7 @@ class Plotter():
             sizes = curr_trades["quantity"].to_numpy()
             sizes = 5 + 15 * (sizes / sizes.max())
 
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=curr_trades["timestamp"],
                 y=curr_trades["price"],
                 mode="markers",
@@ -121,7 +121,7 @@ class Plotter():
         spread = curr_order_book["ask_price_1"] - curr_order_book["bid_price_1"]
 
         spread_fig = go.Figure()
-        spread_fig.add_trace(go.Scatter(
+        spread_fig.add_trace(go.Scattergl(
             x=idx,
             y=spread,
             name="spread",
