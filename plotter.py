@@ -10,12 +10,14 @@ class Plotter():
 
     def __init__(self, prices_path, trades_path):
         self.prices = pd.read_csv(prices_path, delimiter=";")
-        self.trades = pd.read_csv(trades_path, delimiter=";")
+        self.trades = pd.read_csv(trades_path, delimiter=";").rename(columns={
+            "symbol" : "product"
+        })
         self.products = list(self.prices["product"].unique())
 
     def _plot_interval(self, product, t0, t1):
         # --- filter by product ---
-        ob = self.prices[self.prices["product"] == product]
+        ob = self.prices[(self.prices["product"] == product) & (self.prices["mid_price"]) != 0]
         tr = self.trades[self.trades["product"] == product]
 
         # --- filter by timestamp ---
