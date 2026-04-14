@@ -5,6 +5,8 @@ import plotly.graph_objects as go
 import plotly.subplots as _ps
 make_subplots = _ps.make_subplots
 import ipywidgets as widgets
+import re
+import os
 
 class Plotter():
 
@@ -14,6 +16,60 @@ class Plotter():
             "symbol" : "product"
         })
         self.products = list(self.prices["product"].unique())
+    
+    def __init__(self, directory_path):
+        # Regex patterns to match files and extract the day number
+        price_pattern = re.compile(r"prices_round_\d+_day_(-?\d+)\.csv$")
+        trade_pattern = re.compile(r"trades_round_\d+_day_(-?\d+)\.csv$")
+        
+        price_files = []
+        trade_files = []
+        for filename in os.listdir(directory_path):
+            price_match = price_pattern.match(filename)
+            trade_match = trade_pattern.match(filename)
+
+            if price_match:
+                day = int(price_match.group(1))
+                price_files.append((day, os.path.join(directory_path, filename)))
+            elif trade_match:
+                day = int(trade_match.group(1))
+                trade_files.append((day, os.path.join(directory_path, filename)))
+
+        price_files.sort(key=lambda x: x[0])
+        trade_files.sort(key=lambda x: x[0])
+
+        def load_and_concat(file_list, rename_symbol=False):
+            dfs = []
+            timestamp_offset = 0
+
+            for _, filepath in file_list:
+                df = pd.read_csv(filepath, delimiter=";")
+
+                # Rename column for trades if necessary
+                if rename_symbol and "symbol" in df.columns:
+                    df = df.rename(columns={"symbol": "product"})
+
+                # Adjust timestamps to ensure continuity
+                if "timestamp" in df.columns:
+                    df["timestamp"] += timestamp_offset
+                    max_ts = df["timestamp"].max()
+                    # Assuming timestamps increment by 100 and restart at 0 each day
+                    timestamp_offset = max_ts + 100
+
+                dfs.append(df)
+
+            if dfs:
+                return pd.concat(dfs, ignore_index=True)
+            else:
+                return pd.DataFrame()
+
+        self.prices = load_and_concat(price_files)
+        self.trades = load_and_concat(trade_files, rename_symbol=True)
+        if not self.prices.empty and "product" in self.prices.columns:
+            self.products = list(self.prices["product"].unique())
+        else:
+            self.products = []
+
 
     def _plot_interval(self, product, t0, t1):
         # --- filter by product ---
@@ -79,7 +135,6 @@ class Plotter():
         if not curr_trades.empty:
             bid_series = curr_order_book.set_index("timestamp")["bid_price_1"]
             ask_series = curr_order_book.set_index("timestamp")["ask_price_1"]
-            print(curr_trades.head(10))
             colors = curr_trades.apply(lambda row : "green" if row["timestamp"] in ask_series.index and row["price"] >= ask_series.loc[row["timestamp"]] else "red", axis=1)
             trade_prices = curr_trades["price"].to_numpy()
             sizes = curr_trades["quantity"].to_numpy()
