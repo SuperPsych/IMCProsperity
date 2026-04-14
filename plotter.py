@@ -71,7 +71,24 @@ class Plotter():
             self.products = []
 
 
-    def _plot_interval(self, product, t0, t1):
+    def _offset_trades(self, day_offset, days_sorted):
+        """Offset trade timestamps when trades CSV lacks a day column."""
+        # Each file was read in order matching prices files.  Trades within
+        # each original file share the same 0–999_900 range, so we group by
+        # file boundary.  Since we concat'd in the same order as prices_path,
+        # and days_sorted is the sorted unique day values, we assign each
+        # batch of trades (separated by timestamp resets) to the next day.
+        offsets = []
+        prev_ts = -1
+        day_idx = 0
+        for ts in self.trades["timestamp"]:
+            if ts < prev_ts:
+                day_idx = min(day_idx + 1, len(days_sorted) - 1)
+            offsets.append(day_offset[days_sorted[day_idx]])
+            prev_ts = ts
+        self.trades["timestamp"] += offsets
+
+    def _plot_interval(self, product, t0, t1, renderer=None, ymin=None, ymax=None):
         # --- filter by product ---
         ob = self.prices[(self.prices["product"] == product) & (self.prices["mid_price"]) != 0]
         tr = self.trades[self.trades["product"] == product]
@@ -96,7 +113,7 @@ class Plotter():
         fig = go.Figure()
 
         # --- mid ---
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Scattergl(
             x=idx,
             y=curr_order_book["mid_price"],
             name="mid",
@@ -105,7 +122,7 @@ class Plotter():
 
         # --- bids ---
         for i in range(1, 4):
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=idx,
                 y=curr_order_book[f"bid_price_{i}"],
                 name=f"bid_price_{i}",
@@ -119,7 +136,7 @@ class Plotter():
 
         # --- asks ---
         for i in range(1, 4):
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=idx,
                 y=curr_order_book[f"ask_price_{i}"],
                 name=f"ask_price_{i}",
@@ -140,7 +157,7 @@ class Plotter():
             sizes = curr_trades["quantity"].to_numpy()
             sizes = 5 + 15 * (sizes / sizes.max())
 
-            fig.add_trace(go.Scatter(
+            fig.add_trace(go.Scattergl(
                 x=curr_trades["timestamp"],
                 y=curr_trades["price"],
                 mode="markers",
@@ -158,21 +175,24 @@ class Plotter():
                     "Time: %{x}<extra></extra>"
             ))
 
-        fig.update_layout(
+        layout_kwargs = dict(
             title=f"{product} orderbook + trades",
             xaxis_title="timestamp",
             yaxis_title="price",
             legend=dict(x=1.02, y=1, xanchor="left", yanchor="top"),
-            margin=dict(r=150)
+            margin=dict(r=150),
         )
+        if ymin is not None or ymax is not None:
+            layout_kwargs["yaxis_range"] = [ymin, ymax]
+        fig.update_layout(**layout_kwargs)
 
-        fig.show()
+        fig.show(renderer=renderer)
 
         # --- spread ---
         spread = curr_order_book["ask_price_1"] - curr_order_book["bid_price_1"]
 
         spread_fig = go.Figure()
-        spread_fig.add_trace(go.Scatter(
+        spread_fig.add_trace(go.Scattergl(
             x=idx,
             y=spread,
             name="spread",
@@ -185,24 +205,35 @@ class Plotter():
             yaxis_title="spread"
         )
 
-        spread_fig.show()
+        spread_fig.show(renderer=renderer)
 
-    def visualize_orderbook(self, t0=None, t1=None):
-        dropdown = widgets.Dropdown(
-            options=self.products,
-            description="Product:"
-        )
-
+    def visualize_orderbook(self, product=None, t0=None, t1=None, renderer=None,
+                            ymin=None, ymax=None):
+        """
+        Parameters
+        ----------
+        product    : str, optional — plot a single product directly.
+                     If None, shows an interactive dropdown.
+        t0, t1     : int, optional — timestamp range. Defaults to full range.
+        renderer   : str, optional — plotly renderer, e.g. "browser" to open
+                     in a browser tab, "notebook" for inline, etc.
+        ymin, ymax : float, optional — price axis range for the orderbook chart.
+        """
         def plot(product):
             ob = self.prices[self.prices["product"] == product]
-
-            # default to full range if not provided
             start = t0 if t0 is not None else ob["timestamp"].min()
             end = t1 if t1 is not None else ob["timestamp"].max()
+            self._plot_interval(product, start, end, renderer=renderer,
+                                ymin=ymin, ymax=ymax)
 
-            self._plot_interval(product, start, end)
-
-        widgets.interact(plot, product=dropdown)
+        if product is not None:
+            plot(product)
+        else:
+            dropdown = widgets.Dropdown(
+                options=self.products,
+                description="Product:"
+            )
+            widgets.interact(plot, product=dropdown)
 
 
  
