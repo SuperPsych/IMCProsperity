@@ -77,17 +77,11 @@ class Plotter():
 
         # --- trades ---
         if not curr_trades.empty:
-            mid_series = curr_order_book.set_index("timestamp")["mid_price"]
-
-            trade_mid = mid_series.reindex(
-                curr_trades["timestamp"], method="nearest"
-            ).to_numpy()
-
+            bid_series = curr_order_book.set_index("timestamp")["bid_price_1"]
+            ask_series = curr_order_book.set_index("timestamp")["ask_price_1"]
+            print(curr_trades.head(10))
+            colors = curr_trades.apply(lambda row : "green" if row["timestamp"] in ask_series.index and row["price"] >= ask_series.loc[row["timestamp"]] else "red", axis=1)
             trade_prices = curr_trades["price"].to_numpy()
-
-            colors = ["green" if p > m else "red"
-                      for p, m in zip(trade_prices, trade_mid)]
-
             sizes = curr_trades["quantity"].to_numpy()
             sizes = 5 + 15 * (sizes / sizes.max())
 
