@@ -8,18 +8,30 @@ import ipywidgets as widgets
 import re
 import os
 
-class Plotter():
-
-    def __init__(self, prices_path, trades_path):
-        self.prices = pd.read_csv(prices_path, delimiter=";")
-        self.trades = pd.read_csv(trades_path, delimiter=";").rename(columns={
-            "symbol" : "product"
-        })
-        self.products = list(self.prices["product"].unique())
-
 class Plotter:
 
-    def __init__(self, directory_path):
+    def __init__(self, prices_path, trades_path=None):
+        # If trades_path is given, load CSV files directly (single path or list)
+        if trades_path is not None:
+            if isinstance(prices_path, list):
+                self.prices = pd.concat(
+                    [pd.read_csv(p, delimiter=";") for p in prices_path],
+                    ignore_index=True,
+                )
+                self.trades = pd.concat(
+                    [pd.read_csv(t, delimiter=";") for t in trades_path],
+                    ignore_index=True,
+                ).rename(columns={"symbol": "product"})
+            else:
+                self.prices = pd.read_csv(prices_path, delimiter=";")
+                self.trades = pd.read_csv(trades_path, delimiter=";").rename(columns={
+                    "symbol": "product"
+                })
+            self.products = list(self.prices["product"].unique())
+            return
+
+        # Otherwise treat prices_path as a directory and auto-discover files
+        directory_path = prices_path
         # Regex patterns to match files and extract the day number
         price_pattern = re.compile(r"prices_round_\d+_day_(-?\d+)\.csv$")
         trade_pattern = re.compile(r"trades_round_\d+_day_(-?\d+)\.csv$")
@@ -151,9 +163,10 @@ class Plotter:
 
         # --- trades ---
         if not curr_trades.empty:
-            bid_series = curr_order_book.set_index("timestamp")["bid_price_1"]
-            ask_series = curr_order_book.set_index("timestamp")["ask_price_1"]
-            colors = curr_trades.apply(lambda row : "green" if row["timestamp"] in ask_series.index and row["price"] >= ask_series.loc[row["timestamp"]] else "red", axis=1)
+            deduped_ob = curr_order_book.drop_duplicates("timestamp")
+            bid_series = deduped_ob.set_index("timestamp")["bid_price_1"]
+            ask_series = deduped_ob.set_index("timestamp")["ask_price_1"]
+            colors = curr_trades.apply(lambda row: "green" if row["timestamp"] in ask_series.index and row["price"] >= ask_series.at[row["timestamp"]] else "red", axis=1)
             trade_prices = curr_trades["price"].to_numpy()
             sizes = curr_trades["quantity"].to_numpy()
             sizes = 5 + 15 * (sizes / sizes.max())
@@ -280,54 +293,218 @@ class LogVisualizer:
     #  Parsing                                                             #
     # ------------------------------------------------------------------ #
  
-    def parse_logs(self, filepath):
-        """
-        Parse a competition log file.
- 
-        Returns
-        -------
-        df         : pd.DataFrame — order book (one row per product × timestamp)
-        own_df     : pd.DataFrame — own trades with 'side' column ('buy' / 'sell')
-        market_df  : pd.DataFrame — market trades
-        """
+    def _parse_prosperity4bt(self, filepath):
+        """Parse a prosperity4bt log (text sections: Sandbox logs / Activities log / Trade History)."""
         with open(filepath, "r") as f:
-            outer = json.load(f)
- 
-        rows          = []
-        own_trades    = []
+            content = f.read()
+
+        # Split into sections by known headers
+        sections = re.split(r"^(Sandbox logs:|Activities log:|Trade History:)\s*\n",
+                            content, flags=re.MULTILINE)
+
+        sandbox_text = ""
+        activities_text = ""
+        trade_history_text = ""
+
+        for i, sec in enumerate(sections):
+            if sec.strip() == "Sandbox logs:" and i + 1 < len(sections):
+                sandbox_text = sections[i + 1]
+            elif sec.strip() == "Activities log:" and i + 1 < len(sections):
+                activities_text = sections[i + 1]
+            elif sec.strip() == "Trade History:" and i + 1 < len(sections):
+                trade_history_text = sections[i + 1]
+
+        rows = []
         market_trades = []
- 
-        for block in outer.get("logs", []):
-            # ---- order book + market trades from lambdaLog -------------
-            lambda_log = block.get("lambdaLog", "")
-            if not lambda_log:
+
+        # Parse sandbox logs — each block is a JSON object with lambdaLog
+        # Track row index so we can assign day to market trades later
+        for chunk in re.split(r"\n(?=\{)", sandbox_text):
+            chunk = chunk.strip()
+            if not chunk:
                 continue
- 
+            try:
+                block = json.loads(chunk)
+            except json.JSONDecodeError:
+                continue
+
+            lambda_log = block.get("lambdaLog", "")
             for line in lambda_log.split("\n"):
                 line = line.strip()
                 if not line:
                     continue
- 
                 try:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
- 
                 product = obj.get("product")
+                row_idx = len(rows)
                 rows.append(obj)
- 
+
                 for t in obj.get("market_trades", []):
                     if not isinstance(t, list) or len(t) < 3:
                         continue
-                    price, quantity, ts = t[0], t[1], t[2]
                     market_trades.append({
-                        "timestamp": ts,
+                        "timestamp": t[2],
                         "product":   product,
-                        "price":     price,
-                        "quantity":  abs(quantity),
+                        "price":     t[0],
+                        "quantity":  abs(t[1]),
+                        "_row_idx":  row_idx,
                     })
- 
-        # ---- own trades from top-level tradeHistory --------------------
+
+        df = pd.DataFrame(rows)
+
+        # Normalise negative ask volumes
+        for i in range(1, 4):
+            col = f"ask_volume_{i}"
+            if col in df.columns:
+                df[col] = df[col].abs()
+
+        # Merge day + PnL from activities log (CSV with ; delimiter)
+        # The activities log has a 'day' column which the sandbox logs lack,
+        # so we use it to disambiguate rows that share the same timestamp.
+        act = None
+        if activities_text.strip():
+            act = pd.read_csv(io.StringIO(activities_text.strip()), sep=";")
+
+        if act is not None and "day" in act.columns:
+            # Activities log has day + offset timestamps; sandbox logs have
+            # no day and timestamps restart at 0 each day.  We assign day to
+            # sandbox rows by detecting day boundaries: whenever the timestamp
+            # decreases (or stays at 0 after a large value) a new day starts.
+            days_in_act = sorted(act["day"].unique())
+            ts = df["timestamp"].values
+            day_labels = [0] * len(ts)
+            day_idx = 0
+            for i in range(len(ts)):
+                if i > 0 and ts[i] < ts[i - 1]:
+                    day_idx += 1
+                day_labels[i] = (days_in_act[day_idx]
+                                 if day_idx < len(days_in_act)
+                                 else days_in_act[-1])
+            df["day"] = day_labels
+
+            # Merge PnL from activities using (day, timestamp, product).
+            # Activities timestamps are offset; sandbox are not — align them.
+            # Build a per-day offset map from the activities log.
+            act_day_min = act.groupby("day")["timestamp"].min()
+            act["_ts_raw"] = act["timestamp"] - act["day"].map(act_day_min)
+            if "profit_and_loss" in act.columns:
+                df = df.merge(
+                    act[["day", "_ts_raw", "product", "profit_and_loss"]]
+                    .rename(columns={"_ts_raw": "timestamp"}),
+                    on=["day", "timestamp", "product"],
+                    how="left",
+                )
+        elif act is not None:
+            act = act.drop_duplicates(subset=["timestamp", "product"])
+            if "profit_and_loss" in act.columns:
+                df = df.merge(
+                    act[["timestamp", "product", "profit_and_loss"]],
+                    on=["timestamp", "product"],
+                    how="left",
+                )
+
+        df = df.sort_values(["product", "day", "timestamp"] if "day" in df.columns
+                            else ["product", "timestamp"]).reset_index(drop=True)
+
+        # Parse trade history (JSON array with trailing commas)
+        own_trades = []
+        if trade_history_text.strip():
+            # Remove trailing commas before } or ] for valid JSON
+            cleaned = re.sub(r",\s*([}\]])", r"\1", trade_history_text.strip())
+            try:
+                entries = json.loads(cleaned)
+            except json.JSONDecodeError:
+                entries = []
+
+            for entry in entries:
+                buyer  = entry.get("buyer", "")
+                seller = entry.get("seller", "")
+                if buyer != "SUBMISSION" and seller != "SUBMISSION":
+                    continue
+                own_trades.append({
+                    "timestamp": entry["timestamp"],
+                    "product":   entry["symbol"],
+                    "price":     entry["price"],
+                    "quantity":  entry["quantity"],
+                    "side":      "buy" if buyer == "SUBMISSION" else "sell",
+                })
+
+        own_df = pd.DataFrame(own_trades)
+        market_df = pd.DataFrame(market_trades)
+
+        # Assign day to market trades and own trades
+        if "day" in df.columns:
+            # Market trades: inherit day from the sandbox row they came from
+            if not market_df.empty:
+                market_df["day"] = df["day"].iloc[market_df["_row_idx"].values].values
+                market_df = market_df.drop(columns=["_row_idx"])
+                market_df = market_df.sort_values(["day", "timestamp"]).reset_index(drop=True)
+            # Own trades (tradeHistory): timestamps are offset across days.
+            # Use activities day boundaries to assign day + strip offset.
+            if not own_df.empty and act is not None and "day" in act.columns:
+                act_day_min = act.groupby("day")["timestamp"].min().sort_index()
+                day_starts = act_day_min.values  # sorted ascending
+                day_ids = act_day_min.index.values
+                day_col = []
+                raw_ts = []
+                for ts_val in own_df["timestamp"]:
+                    # Find which day this timestamp belongs to
+                    idx = len(day_starts) - 1
+                    for j in range(len(day_starts) - 1, -1, -1):
+                        if ts_val >= day_starts[j]:
+                            idx = j
+                            break
+                    day_col.append(day_ids[idx])
+                    raw_ts.append(ts_val - day_starts[idx])
+                own_df["day"] = day_col
+                own_df["timestamp"] = raw_ts
+                own_df = own_df.sort_values(["day", "timestamp"]).reset_index(drop=True)
+        else:
+            if not market_df.empty:
+                market_df = market_df.drop(columns=["_row_idx"], errors="ignore")
+                market_df = market_df.sort_values("timestamp").reset_index(drop=True)
+            if not own_df.empty:
+                own_df = own_df.sort_values("timestamp").reset_index(drop=True)
+
+        return df, own_df, market_df
+
+    def _parse_competition_json(self, filepath):
+        """Parse a competition-format log (single JSON with logs/tradeHistory/activitiesLog)."""
+        with open(filepath, "r") as f:
+            outer = json.load(f)
+
+        rows          = []
+        own_trades    = []
+        market_trades = []
+
+        for block in outer.get("logs", []):
+            lambda_log = block.get("lambdaLog", "")
+            if not lambda_log:
+                continue
+
+            for line in lambda_log.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                product = obj.get("product")
+                rows.append(obj)
+
+                for t in obj.get("market_trades", []):
+                    if not isinstance(t, list) or len(t) < 3:
+                        continue
+                    market_trades.append({
+                        "timestamp": t[2],
+                        "product":   product,
+                        "price":     t[0],
+                        "quantity":  abs(t[1]),
+                    })
+
         for entry in outer.get("tradeHistory", []):
             buyer  = entry.get("buyer", "")
             seller = entry.get("seller", "")
@@ -340,16 +517,14 @@ class LogVisualizer:
                 "quantity":  entry["quantity"],
                 "side":      "buy" if buyer == "SUBMISSION" else "sell",
             })
- 
+
         df = pd.DataFrame(rows)
- 
-        # Competition stores ask volumes as negative — normalise to positive
+
         for i in range(1, 4):
             col = f"ask_volume_{i}"
             if col in df.columns:
                 df[col] = df[col].abs()
- 
-        # ---- merge PnL from activitiesLog if present -------------------
+
         if "activitiesLog" in outer:
             act = pd.read_csv(io.StringIO(outer["activitiesLog"]), sep=";")
             act = act.drop_duplicates(subset=["timestamp", "product"])
@@ -358,16 +533,36 @@ class LogVisualizer:
                 on=["timestamp", "product"],
                 how="left",
             )
- 
+
         df = df.sort_values(["product", "timestamp"]).reset_index(drop=True)
- 
+
         own_df = pd.DataFrame(own_trades)
         if not own_df.empty:
             own_df = own_df.sort_values("timestamp").reset_index(drop=True)
- 
+
         market_df = pd.DataFrame(market_trades)
         if not market_df.empty:
             market_df = market_df.sort_values("timestamp").reset_index(drop=True)
+
+        return df, own_df, market_df
+
+    def parse_logs(self, filepath):
+        """
+        Parse a competition log file or prosperity4bt log file.
+
+        Returns
+        -------
+        df         : pd.DataFrame — order book (one row per product × timestamp)
+        own_df     : pd.DataFrame — own trades with 'side' column ('buy' / 'sell')
+        market_df  : pd.DataFrame — market trades
+        """
+        with open(filepath, "r") as f:
+            first_line = f.readline().strip()
+
+        if first_line == "Sandbox logs:":
+            df, own_df, market_df = self._parse_prosperity4bt(filepath)
+        else:
+            df, own_df, market_df = self._parse_competition_json(filepath)
  
         self.df        = df
         self.own_df    = own_df
@@ -406,8 +601,10 @@ class LogVisualizer:
     #  Core plot                                                           #
     # ------------------------------------------------------------------ #
  
-    def _plot_interval(self, product, t0, t1):
+    def _plot_interval(self, product, t0, t1, renderer=None, day=None):
         ob = self.df[self.df["product"] == product].copy()
+        if day is not None and "day" in ob.columns:
+            ob = ob[ob["day"] == day]
         ob = ob[(ob["timestamp"] >= t0) & (ob["timestamp"] <= t1)].sort_values("timestamp")
  
         if ob.empty:
@@ -467,6 +664,8 @@ class LogVisualizer:
         # market trades
         if self.market_df is not None and not self.market_df.empty:
             mkt = self.market_df[self.market_df["product"] == product]
+            if day is not None and "day" in mkt.columns:
+                mkt = mkt[mkt["day"] == day]
             mkt = mkt[(mkt["timestamp"] >= t0) & (mkt["timestamp"] <= t1)]
  
             if not mkt.empty:
@@ -497,6 +696,8 @@ class LogVisualizer:
         # own trades — buys (triangle-up) and sells (triangle-down)
         if self.own_df is not None and not self.own_df.empty:
             own = self.own_df[self.own_df["product"] == product].copy()
+            if day is not None and "day" in own.columns:
+                own = own[own["day"] == day]
             own = own[(own["timestamp"] >= t0) & (own["timestamp"] <= t1)]
  
             if not own.empty:
@@ -571,8 +772,8 @@ class LogVisualizer:
             legend=dict(x=1.02, y=1, xanchor="left", yanchor="top"),
             margin=dict(r=150)
         )
-        fig.show()
- 
+        fig.show(renderer=renderer)
+
         # ═══════════════════════════════════════════════════════════════ #
         #  Figure 2 — position                                            #
         # ═══════════════════════════════════════════════════════════════ #
@@ -590,8 +791,8 @@ class LogVisualizer:
                 xaxis_title="timestamp",
                 yaxis_title="position"
             )
-            pos_fig.show()
- 
+            pos_fig.show(renderer=renderer)
+
         # ═══════════════════════════════════════════════════════════════ #
         #  Figure 3 — PnL                                                 #
         # ═══════════════════════════════════════════════════════════════ #
@@ -609,8 +810,8 @@ class LogVisualizer:
                 xaxis_title="timestamp",
                 yaxis_title="profit and loss"
             )
-            pnl_fig.show()
- 
+            pnl_fig.show(renderer=renderer)
+
         # ═══════════════════════════════════════════════════════════════ #
         #  Figure 4 — spread                                              #
         # ═══════════════════════════════════════════════════════════════ #
@@ -626,23 +827,25 @@ class LogVisualizer:
             xaxis_title="timestamp",
             yaxis_title="spread"
         )
-        spread_fig.show()
+        spread_fig.show(renderer=renderer)
  
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
     # ------------------------------------------------------------------ #
  
-    def visualize(self, log_path=None, t0=None, t1=None):
+    def visualize(self, log_path=None, t0=None, t1=None, renderer=None):
         """
         Load (if needed) and launch an interactive product selector widget.
- 
+
         Parameters
         ----------
         log_path : str, optional
             Path to the log JSON file.  If omitted the last parsed data is used.
         t0, t1 : int, optional
             Timestamp range to display.  Defaults to full range per product.
- 
+        renderer : str, optional
+            Plotly renderer, e.g. "browser" to open in a browser tab.
+
         Examples
         --------
         viz = LogVisualizer("round1.json")
@@ -659,15 +862,29 @@ class LogVisualizer:
             )
  
         products = sorted(self.df["product"].dropna().unique())
-        dropdown = widgets.Dropdown(options=products, description="Product:")
- 
-        def plot(product):
-            ob    = self.df[self.df["product"] == product]
-            start = t0 if t0 is not None else int(ob["timestamp"].min())
-            end   = t1 if t1 is not None else int(ob["timestamp"].max())
-            self._plot_interval(product, start, end)
- 
-        widgets.interact(plot, product=dropdown)
+        has_days = "day" in self.df.columns and self.df["day"].notna().any()
+
+        product_dd = widgets.Dropdown(options=products, description="Product:")
+
+        if has_days:
+            days = sorted(self.df["day"].dropna().unique().astype(int))
+            day_dd = widgets.Dropdown(options=days, description="Day:")
+
+            def plot(product, day):
+                ob = self.df[(self.df["product"] == product) & (self.df["day"] == day)]
+                start = t0 if t0 is not None else int(ob["timestamp"].min())
+                end   = t1 if t1 is not None else int(ob["timestamp"].max())
+                self._plot_interval(product, start, end, renderer=renderer, day=day)
+
+            widgets.interact(plot, product=product_dd, day=day_dd)
+        else:
+            def plot(product):
+                ob    = self.df[self.df["product"] == product]
+                start = t0 if t0 is not None else int(ob["timestamp"].min())
+                end   = t1 if t1 is not None else int(ob["timestamp"].max())
+                self._plot_interval(product, start, end, renderer=renderer)
+
+            widgets.interact(plot, product=product_dd)
  
     def summary(self):
         """
