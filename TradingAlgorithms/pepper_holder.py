@@ -114,6 +114,40 @@ def market_take(
     return orders
 
 
+def spike_take(
+    product: str,
+    best_bid: int | None,
+    best_bid_amount: int | None,
+    best_ask: int | None,
+    best_ask_quantity: int | None,
+    prev_bid: int | None,
+    prev_ask: int | None,
+    position: int,
+    spike_thresh: int = 10,
+) -> List[Order]:
+    """Take on price spikes. Sell into bid spikes (long only), buy into ask spikes (short only)."""
+    orders: List[Order] = []
+    if prev_bid is None or prev_ask is None or best_bid is None or best_ask is None:
+        return orders
+
+    bid_diff = best_bid - prev_bid
+    ask_diff = best_ask - prev_ask
+
+    # Bid spike: bid jumped up, and bid moved more than ask
+    if bid_diff >= spike_thresh and bid_diff - ask_diff >= spike_thresh and position > 0:
+        qty = min(position, best_bid_amount)
+        if qty > 0:
+            orders.append(sell(product, best_bid, qty))
+
+    # Ask spike: ask dropped down, and ask moved more than bid
+    if ask_diff <= -spike_thresh and bid_diff - ask_diff >= spike_thresh and position < 0:
+        qty = min(-position, -best_ask_quantity)
+        if qty > 0:
+            orders.append(buy(product, best_ask, qty))
+
+    return orders
+
+
 class Trader:
     TRADED_PRODUCTS = {
         "EMERALDS",
@@ -138,8 +172,10 @@ class Trader:
         "EMERALDS": False,
         "TOMATOES": False,
         "INTARIAN_PEPPER_ROOT": True,
-        "ASH_COATED_OSMIUM": True,
+        "ASH_COATED_OSMIUM": False,
     }
+
+    MA_WINDOW = 10
 
     def __init__(self) -> None:
         self.strategies: Dict[str, Callable[[str, TradingState], List[Order]]] = {
@@ -149,6 +185,7 @@ class Trader:
             "ASH_COATED_OSMIUM": self._trade_osmium,
         }
         self.price_history: Dict[str, List[List[int | None]]] = {}
+        self.mid_history: Dict[str, List[float]] = {}
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
@@ -200,32 +237,41 @@ class Trader:
         limit = self.POSITION_LIMITS.get(product, 80)
         fair = 10_000
         spread_thresh = 16
+        half_width = 8
 
+        # flatten position when price crosses fair
         take_orders = market_take(
-            product,
-            best_bid,
-            best_bid_quantity,
-            best_ask,
-            best_ask_quantity,
-            fair,
-            position,
+            product, best_bid, best_bid_quantity,
+            best_ask, best_ask_quantity, fair, position,
         )
         for order in take_orders:
             position += order.quantity
         orders.extend(take_orders)
 
-        orders.extend(
-            penny(
-                product,
-                best_bid,
-                best_ask,
-                fair,
-                spread_thresh,
-                position,
-                limit,
-            )
+        # take on price spikes
+        prev_bid, prev_ask = self._previous_bbo(product)
+        spike_orders = spike_take(
+            product, best_bid, best_bid_quantity,
+            best_ask, best_ask_quantity,
+            prev_bid, prev_ask, position,
         )
+        for order in spike_orders:
+            position += order.quantity
+        orders.extend(spike_orders)
 
+        # fill missing side with moving average for market making only
+        mm_bid, mm_ask = best_bid, best_ask
+        ma = self._moving_avg(product)
+        if mm_bid is None and ma is not None:
+            mm_bid = int(min(ma - half_width, fair - half_width))
+        if mm_ask is None and ma is not None:
+            mm_ask = int(max(ma + half_width, fair + half_width))
+
+        # penny the spread
+        orders.extend(penny(product, mm_bid, mm_ask, fair,
+                            spread_thresh, position, limit))
+
+        self._update_mid(product, best_bid, best_ask)
         self.price_history.setdefault(product, []).append([best_bid, best_ask])
         return orders
 
@@ -233,6 +279,18 @@ class Trader:
         if self.price_history.get(product):
             return tuple(self.price_history[product][-1])
         return None, None
+
+    def _update_mid(self, product: str, best_bid: int | None, best_ask: int | None) -> None:
+        if best_bid is not None and best_ask is not None:
+            mid = (best_bid + best_ask) / 2
+            self.mid_history.setdefault(product, []).append(mid)
+
+    def _moving_avg(self, product: str) -> float | None:
+        history = self.mid_history.get(product, [])
+        if not history:
+            return None
+        window = history[-self.MA_WINDOW:]
+        return sum(window) / len(window)
 
     def _run_pepper_strategy(self, product: str, state: TradingState) -> List[Order]:
         order_depth = state.order_depths[product]
