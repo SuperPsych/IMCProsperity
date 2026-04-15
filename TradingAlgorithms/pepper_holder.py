@@ -152,7 +152,7 @@ class Trader:
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
-        logger.print("timestamp:", state.timestamp)
+        #logger.print("timestamp:", state.timestamp)
         logger.print("positions:", state.position)
 
         for product in self.TRADED_PRODUCTS:
@@ -229,15 +229,22 @@ class Trader:
         self.price_history.setdefault(product, []).append([best_bid, best_ask])
         return orders
 
+    def _previous_bbo(self, product: str) -> Tuple[int | None, int | None]:
+        if self.price_history.get(product):
+            return tuple(self.price_history[product][-1])
+        return None, None
+
     def _run_pepper_strategy(self, product: str, state: TradingState) -> List[Order]:
         order_depth = state.order_depths[product]
         orders: List[Order] = []
         position = state.position.get(product, 0)
         limit = self.POSITION_LIMITS.get(product, 80)
-        buy_capacity = limit - position
-
-        if buy_capacity <= 0:
-            return orders
+        reserve = 8
+        spread_market_thresh = 12
+        spike_thresh = 9
+        spread_take_thresh = 3
+        core_target = limit - reserve
+        buy_capacity = max(0, core_target - position)
 
         for ask_price in sorted(order_depth.sell_orders):
             if buy_capacity <= 0:
@@ -249,9 +256,49 @@ class Trader:
             if size > 0:
                 orders.append(Order(product, ask_price, size))
                 buy_capacity -= size
+                position += size
 
+        prev_bid, prev_ask = self._previous_bbo(product)
+        asks = sorted(order_depth.sell_orders.items())
+        bids = sorted(order_depth.buy_orders.items(), reverse=True)
+
+        best_ask, best_ask_quantity = asks[0] if asks else (None, None)
+        best_bid, best_bid_quantity = bids[0] if bids else (None, None)
+        spread = best_ask - best_bid if (best_ask is not None and best_bid is not None) else 0
+
+        # market taking10
+        if spread <= spread_take_thresh:
+            if (
+                best_ask is not None
+                and prev_ask is not None
+                and prev_ask - best_ask >= spike_thresh
+                and position < limit
+            ):
+                qty = min(limit - position, -best_ask_quantity)
+                if qty > 0:
+                    orders.append(buy(product, best_ask, qty))
+                    position += qty
+
+            if (
+                best_bid is not None
+                and prev_bid is not None
+                and best_bid - prev_bid >= spike_thresh
+                and position > core_target
+            ):
+                qty = min(position - core_target, best_bid_quantity)
+                if qty > 0:
+                    orders.append(sell(product, best_bid, qty))
+                    position -= qty
+
+        # market making
+        if spread >= spread_market_thresh and best_bid is not None and best_ask is not None:
+            if position < limit:
+                orders.append(buy(product, best_bid + 1, limit - position))
+            if position > core_target:
+                orders.append(sell(product, best_ask - 1, position - core_target))
+
+        self.price_history.setdefault(product, []).append([best_bid, best_ask])
         return orders
-
     def _fair_value(self, product: str, order_depth: OrderDepth) -> int | None:
         if product in self.FAIR_VALUES:
             return self.FAIR_VALUES[product]

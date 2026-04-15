@@ -94,7 +94,7 @@ def penny(product, best_bid, best_ask, fair, spread_thresh, position, limit):
             orders.append(sell(product, best_ask - 1, limit + position))
     return orders
 
-def market_take(product, best_bid, best_bid_quantity, best_ask, best_ask_quantity, fair, position):
+def market_take(product, best_bid, best_bid_amount, best_ask, best_ask_quantity, fair, position):
     """Hit mispriced quotes to flatten position toward zero."""
     orders = []
     # ask at or below fair and we're short → buy to flatten
@@ -103,7 +103,7 @@ def market_take(product, best_bid, best_bid_quantity, best_ask, best_ask_quantit
         orders.append(buy(product, best_ask, qty))
     # bid at or above fair and we're long → sell to flatten
     if best_bid is not None and best_bid >= fair and position > 0:
-        qty = min(position, best_bid_quantity)
+        qty = min(position, best_bid_amount)
         orders.append(sell(product, best_bid, qty))
     return orders
 
@@ -130,7 +130,7 @@ class Trader:
             bids = sorted(order_depth.buy_orders.items(), reverse=True)
 
             best_ask, best_ask_quantity = asks[0] if asks else (None, None)
-            best_bid, best_bid_quantity = bids[0] if bids else (None, None)
+            best_bid, best_bid_amount = bids[0] if bids else (None, None)
 
             LIMIT = self.POSITION_LIMIT.get(product, 50)
 
@@ -139,7 +139,7 @@ class Trader:
                 spread_thresh = 16
 
                 # flatten position when price crosses fair
-                take_orders = market_take(product, best_bid, best_bid_quantity,
+                take_orders = market_take(product, best_bid, best_bid_amount,
                                           best_ask, best_ask_quantity, fair, position)
                 for o in take_orders:
                     position += o.quantity
