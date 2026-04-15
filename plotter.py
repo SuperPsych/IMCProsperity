@@ -5,69 +5,94 @@ import plotly.graph_objects as go
 import plotly.subplots as _ps
 make_subplots = _ps.make_subplots
 import ipywidgets as widgets
+import re
+import os
 
 class Plotter():
 
     def __init__(self, prices_path, trades_path):
-        """
-        Parameters
-        ----------
-        prices_path : str or list[str] — single CSV or list of CSVs to merge.
-        trades_path : str or list[str] — single CSV or list of CSVs to merge.
-
-        When multiple files are passed, timestamps are offset per day so they
-        form a continuous timeline (each day spans 0–999_900, so day N gets
-        offset N * 1_000_000).
-        """
-        if isinstance(prices_path, str):
-            prices_path = [prices_path]
-        if isinstance(trades_path, str):
-            trades_path = [trades_path]
-
-        self.prices = pd.concat(
-            [pd.read_csv(p, delimiter=";") for p in prices_path],
-            ignore_index=True,
-        )
-        self.trades = pd.concat(
-            [pd.read_csv(t, delimiter=";") for t in trades_path],
-            ignore_index=True,
-        )
-
-        # offset timestamps so merged days don't overlap
-        if "day" in self.prices.columns:
-            days_sorted = sorted(self.prices["day"].unique())
-            day_offset = {d: i * 1_000_000 for i, d in enumerate(days_sorted)}
-            self.prices["timestamp"] += self.prices["day"].map(day_offset)
-            # trades CSVs don't have a day column — infer from timestamp range
-            if "day" in self.trades.columns:
-                self.trades["timestamp"] += self.trades["day"].map(day_offset)
-            elif len(days_sorted) > 1:
-                # assign trades to days by matching against price file day boundaries
-                self._offset_trades(day_offset, days_sorted)
-
+        self.prices = pd.read_csv(prices_path, delimiter=";")
+        self.trades = pd.read_csv(trades_path, delimiter=";").rename(columns={
+            "symbol" : "product"
+        })
         self.products = list(self.prices["product"].unique())
 
-    def _offset_trades(self, day_offset, days_sorted):
-        """Offset trade timestamps when trades CSV lacks a day column."""
-        # Each file was read in order matching prices files.  Trades within
-        # each original file share the same 0–999_900 range, so we group by
-        # file boundary.  Since we concat'd in the same order as prices_path,
-        # and days_sorted is the sorted unique day values, we assign each
-        # batch of trades (separated by timestamp resets) to the next day.
-        offsets = []
-        prev_ts = -1
-        day_idx = 0
-        for ts in self.trades["timestamp"]:
-            if ts < prev_ts:
-                day_idx = min(day_idx + 1, len(days_sorted) - 1)
-            offsets.append(day_offset[days_sorted[day_idx]])
-            prev_ts = ts
-        self.trades["timestamp"] += offsets
+class Plotter:
+
+    def __init__(self, directory_path):
+        # Regex patterns to match files and extract the day number
+        price_pattern = re.compile(r"prices_round_\d+_day_(-?\d+)\.csv$")
+        trade_pattern = re.compile(r"trades_round_\d+_day_(-?\d+)\.csv$")
+
+        price_files = {}
+        trade_files = {}
+
+        # Discover files and map them by day
+        for filename in os.listdir(directory_path):
+            price_match = price_pattern.match(filename)
+            trade_match = trade_pattern.match(filename)
+
+            if price_match:
+                day = int(price_match.group(1))
+                price_files[day] = os.path.join(directory_path, filename)
+            elif trade_match:
+                day = int(trade_match.group(1))
+                trade_files[day] = os.path.join(directory_path, filename)
+
+        # Sort all unique days present in either prices or trades
+        days_sorted = sorted(set(price_files.keys()) | set(trade_files.keys()))
+
+        prices_dfs = []
+        trades_dfs = []
+        cumulative_offset = 0
+
+        for day in days_sorted:
+            # --- Load prices for the day ---
+            day_max_timestamp = 0
+            if day in price_files:
+                df_prices = pd.read_csv(price_files[day], delimiter=";")
+                df_prices["timestamp"] += cumulative_offset
+                prices_dfs.append(df_prices)
+
+                # Determine the max timestamp for this day
+                if "timestamp" in df_prices.columns:
+                    # Subtract the offset to get the original max timestamp
+                    day_max_timestamp = (
+                        df_prices["timestamp"].max() - cumulative_offset
+                    )
+
+            # --- Load trades for the day ---
+            if day in trade_files:
+                df_trades = pd.read_csv(trade_files[day], delimiter=";")
+                if "symbol" in df_trades.columns:
+                    df_trades = df_trades.rename(columns={"symbol": "product"})
+                df_trades["timestamp"] += cumulative_offset
+                trades_dfs.append(df_trades)
+
+            # Update the cumulative offset for the next day
+            # Add 100 because timestamps increase in increments of 100
+            cumulative_offset += day_max_timestamp + 100
+
+        # Concatenate all dataframes
+        self.prices = (
+            pd.concat(prices_dfs, ignore_index=True)
+            if prices_dfs else pd.DataFrame()
+        )
+        self.trades = (
+            pd.concat(trades_dfs, ignore_index=True)
+            if trades_dfs else pd.DataFrame()
+        )
+
+        # Extract unique products
+        if not self.prices.empty and "product" in self.prices.columns:
+            self.products = sorted(self.prices["product"].unique())
+        else:
+            self.products = []
 
     def _plot_interval(self, product, t0, t1, renderer=None, ymin=None, ymax=None):
         # --- filter by product ---
-        ob = self.prices[self.prices["product"] == product]
-        tr = self.trades[self.trades["symbol"] == product]
+        ob = self.prices[(self.prices["product"] == product) & (self.prices["mid_price"]) != 0]
+        tr = self.trades[self.trades["product"] == product]
 
         # --- filter by timestamp ---
         curr_order_book = ob[
@@ -126,17 +151,10 @@ class Plotter():
 
         # --- trades ---
         if not curr_trades.empty:
-            mid_series = curr_order_book.set_index("timestamp")["mid_price"]
-
-            trade_mid = mid_series.reindex(
-                curr_trades["timestamp"], method="nearest"
-            ).to_numpy()
-
+            bid_series = curr_order_book.set_index("timestamp")["bid_price_1"]
+            ask_series = curr_order_book.set_index("timestamp")["ask_price_1"]
+            colors = curr_trades.apply(lambda row : "green" if row["timestamp"] in ask_series.index and row["price"] >= ask_series.loc[row["timestamp"]] else "red", axis=1)
             trade_prices = curr_trades["price"].to_numpy()
-
-            colors = ["green" if p > m else "red"
-                      for p, m in zip(trade_prices, trade_mid)]
-
             sizes = curr_trades["quantity"].to_numpy()
             sizes = 5 + 15 * (sizes / sizes.max())
 
