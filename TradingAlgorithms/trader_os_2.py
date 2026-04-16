@@ -88,9 +88,9 @@ def penny(product, best_bid, best_ask, fair, spread_thresh, position, limit):
     orders = []
     spread = best_ask - best_bid if (best_ask is not None and best_bid is not None) else 0
     if spread >= spread_thresh:
-        if best_bid + 1 < fair and position < limit:
+        if (best_bid + 1 < fair or (best_bid + 1 == fair and position < 0)) and position < limit:
             orders.append(buy(product, best_bid + 1, limit - position))
-        if best_ask - 1 > fair and position > -limit:
+        if (best_ask - 1 > fair or (best_ask - 1 == fair and position > 0)) and position > -limit:
             orders.append(sell(product, best_ask - 1, limit + position))
     return orders
 
@@ -182,9 +182,21 @@ class Trader:
             LIMIT = self.POSITION_LIMIT.get(product, 50)
 
             if product == "ASH_COATED_OSMIUM":
-                fair = 10000
-                spread_thresh = 16
-                half_width = 8
+                # --- parameters ---
+                PARAMS = {
+                    "base_fair": 10000,
+                    "spread_thresh": 16,
+                    "half_width": 8,
+                    "position_adjust_step": 15,
+                    "spike_thresh": 10,
+                }
+                base_fair = PARAMS["base_fair"]
+                spread_thresh = PARAMS["spread_thresh"]
+                half_width = PARAMS["half_width"]
+                pos_step = PARAMS["position_adjust_step"]
+                spike_thresh = PARAMS["spike_thresh"]
+
+                fair = base_fair + (position // pos_step * -1)
 
                 # flatten position when price crosses fair
                 take_orders = market_take(product, best_bid, best_bid_amount,
@@ -197,7 +209,8 @@ class Trader:
                 prev_bid, prev_ask = self._previous_bbo(product)
                 spike_orders = spike_take(product, best_bid, best_bid_amount,
                                           best_ask, best_ask_quantity,
-                                          prev_bid, prev_ask, position)
+                                          prev_bid, prev_ask, position,
+                                          spike_thresh)
                 for o in spike_orders:
                     position += o.quantity
                 orders.extend(spike_orders)
@@ -207,7 +220,7 @@ class Trader:
                 ma = self._moving_avg(product)
                 if mm_bid is None and ma is not None:
                     mm_bid = int(min(ma - half_width, fair - half_width))
-                if mm_ask is None  and ma is not None:
+                if mm_ask is None and ma is not None:
                     mm_ask = int(max(ma + half_width, fair + half_width))
 
                 # penny the spread
@@ -215,7 +228,10 @@ class Trader:
                                     spread_thresh, position, LIMIT))
 
             self._update_mid(product, best_bid, best_ask)
-            self.price_history.setdefault(product, []).append([best_bid, best_ask])
+            last_bid, last_ask = self._previous_bbo(product)
+            stored_bid = best_bid if best_bid is not None else last_bid
+            stored_ask = best_ask if best_ask is not None else last_ask
+            self.price_history.setdefault(product, []).append([stored_bid, stored_ask])
             result[product] = orders
 
         traderData = ""
