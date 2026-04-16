@@ -88,9 +88,9 @@ def penny(
     orders: List[Order] = []
     spread = best_ask - best_bid if (best_ask is not None and best_bid is not None) else 0
     if spread >= spread_thresh:
-        if best_bid + 1 < fair and position < limit:
+        if (best_bid + 1 < fair or (best_bid + 1 == fair and position < 0)) and position < limit:
             orders.append(buy(product, best_bid + 1, limit - position))
-        if best_ask - 1 > fair and position > -limit:
+        if (best_ask - 1 > fair or (best_ask - 1 == fair and position > 0)) and position > -limit:
             orders.append(sell(product, best_ask - 1, limit + position))
     return orders
 
@@ -172,7 +172,7 @@ class Trader:
         "EMERALDS": False,
         "TOMATOES": False,
         "INTARIAN_PEPPER_ROOT": True,
-        "ASH_COATED_OSMIUM": False,
+        "ASH_COATED_OSMIUM": True,
     }
 
     MA_WINDOW = 10
@@ -235,9 +235,22 @@ class Trader:
         best_bid, best_bid_quantity = bids[0] if bids else (None, None)
 
         limit = self.POSITION_LIMITS.get(product, 80)
-        fair = 10_000
-        spread_thresh = 16
-        half_width = 8
+
+        # --- parameters ---
+        PARAMS = {
+            "base_fair": 10_000,
+            "spread_thresh": 16,
+            "half_width": 8,
+            "position_adjust_step": 15,
+            "spike_thresh": 10,
+        }
+        base_fair = PARAMS["base_fair"]
+        spread_thresh = PARAMS["spread_thresh"]
+        half_width = PARAMS["half_width"]
+        pos_step = PARAMS["position_adjust_step"]
+        spike_thresh = PARAMS["spike_thresh"]
+
+        fair = base_fair + (position // pos_step * -1)
 
         # flatten position when price crosses fair
         take_orders = market_take(
@@ -253,7 +266,7 @@ class Trader:
         spike_orders = spike_take(
             product, best_bid, best_bid_quantity,
             best_ask, best_ask_quantity,
-            prev_bid, prev_ask, position,
+            prev_bid, prev_ask, position, spike_thresh,
         )
         for order in spike_orders:
             position += order.quantity
@@ -272,7 +285,10 @@ class Trader:
                             spread_thresh, position, limit))
 
         self._update_mid(product, best_bid, best_ask)
-        self.price_history.setdefault(product, []).append([best_bid, best_ask])
+        last_bid, last_ask = self._previous_bbo(product)
+        stored_bid = best_bid if best_bid is not None else last_bid
+        stored_ask = best_ask if best_ask is not None else last_ask
+        self.price_history.setdefault(product, []).append([stored_bid, stored_ask])
         return orders
 
     def _previous_bbo(self, product: str) -> Tuple[int | None, int | None]:
@@ -304,15 +320,12 @@ class Trader:
         core_target = limit - reserve
         buy_capacity = max(0, core_target - position)
 
-        for ask_price in sorted(order_depth.sell_orders):
-            if buy_capacity <= 0:
-                break
-
-            ask_volume = -order_depth.sell_orders[ask_price]
-            size = min(buy_capacity, ask_volume)
-
+        asks = sorted(order_depth.sell_orders.items())
+        if asks and buy_capacity > 0:
+            best_ask_price, best_ask_vol = asks[0]
+            size = min(buy_capacity, -best_ask_vol)
             if size > 0:
-                orders.append(Order(product, ask_price, size))
+                orders.append(Order(product, best_ask_price, size))
                 buy_capacity -= size
                 position += size
 
