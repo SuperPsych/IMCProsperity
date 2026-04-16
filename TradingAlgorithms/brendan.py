@@ -239,10 +239,10 @@ class Trader:
         # --- parameters ---
         OS_CFG = {
             "base_fair": 10_000,
-            "alpha": 0.125,       # fair adjustment per unit of position (fair -= alpha * position)
-            "edge": 0.5,          # minimum ticks of edge vs fair required to post a quote
+            "alpha": 0.075,       # fair adjustment per unit of position (fair -= alpha * position)
+            "edge": 0,            # minimum ticks of edge vs fair required to post a quote
             "half_width": 8,
-            "take_edge": 1.5,
+            "take_edge": 0.6,
         }
         base_fair = OS_CFG["base_fair"]
         alpha = OS_CFG["alpha"]
@@ -250,7 +250,10 @@ class Trader:
         half_width = OS_CFG["half_width"]
         take_edge = OS_CFG["take_edge"]
 
-        fair = base_fair - alpha * position
+        # Blend base_fair (70%) with recent mid price (30%) for better quote placement
+        mid_hist = self.mid_history.get(product, [])
+        recent_mid = mid_hist[-1] if mid_hist else base_fair
+        fair = 0.70 * base_fair + 0.30 * recent_mid - alpha * position
 
         # flatten position when price crosses base fair
         # take_orders = market_take(
@@ -348,9 +351,9 @@ class Trader:
         # --- parameters ---
         PARAMS = {
             "reserve": 8,
-            "take_edge": 2,       # take when price is good to fair by at least this many ticks
-            "mm_edge": 4,         # post passive quote when price is good to fair by at least this many ticks
-            "limit_fade": 3,
+            "take_edge": 1,       # take when price is good to fair by at least this many ticks
+            "mm_edge": 2,         # post passive quote when price is good to fair by at least this many ticks
+            "limit_fade": 2,
             "spike_factor": 0.75, # extra inventory floor per tick of bid spike quality above take_edge
         }
         reserve = PARAMS["reserve"]
@@ -373,14 +376,15 @@ class Trader:
         best_ask, best_ask_quantity = asks[0] if asks else (None, None)
         best_bid, best_bid_quantity = bids[0] if bids else (None, None)
 
-        # aggressive accumulation up to core_target (first level only)
-        # only lift asks within 5 ticks of fair — ignore ask spikes above that
+        # aggressive accumulation up to core_target — sweep all ask levels within ceiling
         aa_ceiling = fair + 7
         buy_capacity = max(0, core_target - position)
-        if asks and buy_capacity > 0 and best_ask <= aa_ceiling:
-            size = min(buy_capacity, -best_ask_quantity)
+        for ask_price, ask_qty in asks:
+            if buy_capacity <= 0 or ask_price > aa_ceiling:
+                break
+            size = min(buy_capacity, -ask_qty)
             if size > 0:
-                orders.append(Order(product, best_ask, size))
+                orders.append(Order(product, ask_price, size))
                 buy_capacity -= size
                 position += size
 
@@ -404,7 +408,7 @@ class Trader:
         # market making: post 1 tick inside spread when quote is at least mm_edge better than fair
         if best_bid is not None and best_bid + 1 <= fair - mm_edge and position < limit:
             orders.append(buy(product, best_bid + 1, limit - position))
-        if best_ask is not None and best_ask - 1 >= fair + mm_edge and position > core_target:
+        if best_ask is not None and best_ask - 1 >= fair + 3 and position > core_target:
             orders.append(sell(product, best_ask - 1, position - core_target))
 
         self.price_history.setdefault(product, []).append([
