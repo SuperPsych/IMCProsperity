@@ -237,18 +237,18 @@ class Trader:
         limit = self.POSITION_LIMITS.get(product, 80)
 
         # --- parameters ---
-        OS_CFG = {
+        PARAMS = {
             "base_fair": 10_000,
             "alpha": 0.05,       # fair adjustment per unit of position (fair -= alpha * position)
             "edge": 0,          # minimum ticks of edge vs fair required to post a quote
             "half_width": 8,
             "spike_thresh": 10,
         }
-        base_fair = OS_CFG["base_fair"]
-        alpha = OS_CFG["alpha"]
-        edge = OS_CFG["edge"]
-        half_width = OS_CFG["half_width"]
-        spike_thresh = OS_CFG["spike_thresh"]
+        base_fair = PARAMS["base_fair"]
+        alpha = PARAMS["alpha"]
+        edge = PARAMS["edge"]
+        half_width = PARAMS["half_width"]
+        spike_thresh = PARAMS["spike_thresh"]
 
         fair = base_fair - alpha * position
 
@@ -340,16 +340,16 @@ class Trader:
         limit = self.POSITION_LIMITS.get(product, 80)
 
         # --- parameters ---
-        PARAMS = {
+        PEPPER_CFG = {
             "reserve": 8,
-            "spread_market_thresh": 12,
-            "fair_take_margin": 0,
+            "spread_market_thresh": 8,
+            "fair_take_margin": 2,
             "half_spread_mm": 7,
         }
-        reserve = PARAMS["reserve"]
-        spread_market_thresh = PARAMS["spread_market_thresh"]
-        fair_take_margin = PARAMS["fair_take_margin"]
-        half_spread_mm = PARAMS["half_spread_mm"]
+        reserve = PEPPER_CFG["reserve"]
+        spread_market_thresh = PEPPER_CFG["spread_market_thresh"]
+        fair_take_margin = PEPPER_CFG["fair_take_margin"]
+        half_spread_mm = PEPPER_CFG["half_spread_mm"]
 
         core_target = limit - reserve
 
@@ -364,8 +364,12 @@ class Trader:
         best_bid, best_bid_quantity = bids[0] if bids else (None, None)
 
         # aggressive accumulation up to core_target (first level only)
+        # skip if ask ticked up by 1 or 2 from previous (avoid buying into uptick)
+        _, prev_ask = self._previous_bbo(product)
+        ask_uptick = (best_ask is not None and prev_ask is not None
+                      and best_ask - prev_ask > 0)
         buy_capacity = max(0, core_target - position)
-        if asks and buy_capacity > 0:
+        if asks and buy_capacity > 0 and not ask_uptick:
             size = min(buy_capacity, -best_ask_quantity)
             if size > 0:
                 orders.append(Order(product, best_ask, size))

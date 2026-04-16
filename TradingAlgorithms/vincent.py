@@ -363,7 +363,11 @@ class Trader:
             fair -= pepper_fade * (position - core_target)
 
         # accumulate to core_target
-        if asks and buy_capacity > 0:
+        # skip if ask went up from previous tick
+        _, prev_ask = self._previous_bbo(product)
+        ask_uptick = (best_ask is not None and prev_ask is not None
+                      and best_ask - prev_ask > 0)
+        if asks and buy_capacity > 0 and not ask_uptick:
             best_ask_price, best_ask_vol = asks[0]
             size = min(buy_capacity, -best_ask_vol)
             if size > 0:
