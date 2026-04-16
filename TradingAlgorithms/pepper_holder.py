@@ -171,7 +171,7 @@ class Trader:
     ENABLE_STRATEGY: Dict[str, bool] = {
         "EMERALDS": False,
         "TOMATOES": False,
-        "INTARIAN_PEPPER_ROOT": True,
+        "INTARIAN_PEPPER_ROOT": False,
         "ASH_COATED_OSMIUM": True,
     }
 
@@ -313,10 +313,19 @@ class Trader:
         orders: List[Order] = []
         position = state.position.get(product, 0)
         limit = self.POSITION_LIMITS.get(product, 80)
-        reserve = 8
-        spread_market_thresh = 12
-        spike_thresh = 9
-        spread_take_thresh = 3
+
+        # --- parameters ---
+        PARAMS = {
+            "reserve": 8,
+            "spread_market_thresh": 12,
+            "spike_thresh": 9,
+            "spread_take_thresh": 3,
+        }
+        reserve = PARAMS["reserve"]
+        spread_market_thresh = PARAMS["spread_market_thresh"]
+        spike_thresh = PARAMS["spike_thresh"]
+        spread_take_thresh = PARAMS["spread_take_thresh"]
+
         core_target = limit - reserve
         buy_capacity = max(0, core_target - position)
 

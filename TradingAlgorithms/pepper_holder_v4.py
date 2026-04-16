@@ -2,6 +2,27 @@ from datamodel import Order, OrderDepth, TradingState
 from typing import Any, Callable, Dict, List, Tuple
 import json
 
+# Patch prosperity4bt's runner to include new products
+try:
+    import sys
+    from prosperity4bt import runner
+    if not hasattr(runner, '_patched_limits'):
+        runner.LIMITS = {
+            "EMERALDS": 80,
+            "TOMATOES": 80,
+            "INTARIAN_PEPPER_ROOT": 80,
+            "ASH_COATED_OSMIUM": 80,
+        }
+        runner._patched_limits = True
+except:
+    pass
+
+
+# Module-level parameters for grid search
+PARAMS = {
+    "initial_target": 63,
+}
+
 
 class Logger:
     def __init__(self) -> None:
@@ -185,7 +206,8 @@ class Trader:
         }
         self.price_history: Dict[str, List[List[int | None]]] = {}
         self.mid_history: Dict[str, List[float]] = {}
-        self.initial_fair: Dict[str, float | None] = {}
+        # running sums for O(1) linear regression: y = a + b*x, x = step index
+        self.linreg: Dict[str, Dict[str, float]] = {}
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
@@ -308,30 +330,26 @@ class Trader:
         window = history[-self.MA_WINDOW:]
         return sum(window) / len(window)
 
-    def _estimate_initial_fair(self, product: str, order_depth: OrderDepth) -> float | None:
-        """Estimate initial fair from mid price, rounded to nearest 1000. Returns None if no data."""
-        best_bid = max(order_depth.buy_orders) if order_depth.buy_orders else None
-        best_ask = min(order_depth.sell_orders) if order_depth.sell_orders else None
-        if best_bid is not None and best_ask is not None:
-            mid = (best_bid + best_ask) / 2
-        elif best_bid is not None:
-            mid = best_bid
-        elif best_ask is not None:
-            mid = best_ask
-        else:
-            return None
-        return round(mid / 1000) * 1000
+    def _update_linreg(self, product: str, mid: float) -> None:
+        s = self.linreg.setdefault(product, {"n": 0, "sx": 0.0, "sy": 0.0, "sxx": 0.0, "sxy": 0.0})
+        x = float(s["n"])
+        s["n"] += 1
+        s["sx"] += x
+        s["sy"] += mid
+        s["sxx"] += x * x
+        s["sxy"] += x * mid
 
-    def _pepper_fair(self, product: str, state: TradingState) -> float | None:
-        """Fair = 0.1 * (timestamp / 100) + initial_fair. Returns None if initial fair unknown."""
-        if product not in self.initial_fair:
-            estimate = self._estimate_initial_fair(
-                product, state.order_depths[product]
-            )
-            if estimate is None:
-                return None
-            self.initial_fair[product] = estimate
-        return 0.1 * (state.timestamp / 100) + self.initial_fair[product]
+    def _linreg_fair(self, product: str) -> float | None:
+        s = self.linreg.get(product)
+        if s is None or s["n"] < 2:
+            return None
+        n, sx, sy, sxx, sxy = s["n"], s["sx"], s["sy"], s["sxx"], s["sxy"]
+        denom = n * sxx - sx * sx
+        if denom == 0:
+            return sy / n  # all same x — return mean
+        b = (n * sxy - sx * sy) / denom
+        a = (sy - b * sx) / n
+        return a + b * n  # predict at next step index
 
     def _run_pepper_strategy(self, product: str, state: TradingState) -> List[Order]:
         order_depth = state.order_depths[product]
@@ -340,90 +358,77 @@ class Trader:
         limit = self.POSITION_LIMITS.get(product, 80)
 
         # --- parameters ---
-        PEPPER_CFG = {
-            "reserve": 8,
-            "spread_market_thresh": 8,
-            "fair_take_margin": 2,
-            "half_spread_mm": 7,
-        }
-        reserve = PEPPER_CFG["reserve"]
-        spread_market_thresh = PEPPER_CFG["spread_market_thresh"]
-        fair_take_margin = PEPPER_CFG["fair_take_margin"]
-        half_spread_mm = PEPPER_CFG["half_spread_mm"]
+        initial_target = PARAMS["initial_target"]  # Only lift asks until we reach this position
+        reserve = 8
+        spike_thresh = 2
+        spread_take_thresh = 6
+        pepper_edge = 2   # min ticks of edge vs fair required to post a quote
+        pepper_fade = 0.1 # fair -= pepper_fade * (position - core_target) when over core_target
 
         core_target = limit - reserve
-
-        fair = self._pepper_fair(product, state)
-        if fair is None:
-            return orders
+        buy_capacity = max(0, core_target - position)
 
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
 
         best_ask, best_ask_quantity = asks[0] if asks else (None, None)
         best_bid, best_bid_quantity = bids[0] if bids else (None, None)
-
-        # aggressive accumulation up to core_target (first level only)
-        # skip if ask ticked up by 1 or 2 from previous (avoid buying into uptick)
-        _, prev_ask = self._previous_bbo(product)
-        ask_uptick = (best_ask is not None and prev_ask is not None
-                      and best_ask - prev_ask > 0)
-        buy_capacity = max(0, core_target - position)
-        if asks and buy_capacity > 0 and not ask_uptick:
-            size = min(buy_capacity, -best_ask_quantity)
-            if size > 0:
-                orders.append(Order(product, best_ask, size))
-                buy_capacity -= size
-                position += size
-
-        # spike taking: buy when ask is close to or below fair,
-        #               sell when bid is close to or above fair
-        if best_ask is not None and best_ask <= fair + fair_take_margin and position < limit:
-            qty = min(limit - position, -best_ask_quantity)
-            if qty > 0:
-                orders.append(buy(product, best_ask, qty))
-                position += qty
-
-        if best_bid is not None and best_bid >= fair - fair_take_margin and position > core_target:
-            qty = min(position - core_target, best_bid_quantity)
-            if qty > 0:
-                orders.append(sell(product, best_bid, qty))
-                position -= qty
-
-        # market making (v2 style — both sides must exist)
         spread = best_ask - best_bid if (best_ask is not None and best_bid is not None) else 0
-        if spread >= spread_market_thresh and best_bid is not None and best_ask is not None:
-            if position < limit:
+
+        # update linear regression fair value
+        if best_bid is not None and best_ask is not None:
+            self._update_linreg(product, (best_bid + best_ask) / 2)
+        fair = self._linreg_fair(product)
+
+        # fade fair down when holding above core_target to encourage selling
+        if fair is not None and position > core_target:
+            fair -= pepper_fade * (position - core_target)
+
+        # Initial accumulation: only lift asks until position reaches initial_target (60)
+        if position < initial_target:
+            if asks:
+                best_ask_price, best_ask_vol = asks[0]
+                size = min(initial_target - position, -best_ask_vol)
+                if size > 0:
+                    orders.append(Order(product, best_ask_price, size))
+                    position += size
+        # After initial_target, only accumulate via market making (pennying)
+        elif position < core_target and buy_capacity > 0:
+            # Only buy via pennying, not aggressive lifting
+            pass  # Let the pennying logic below handle this
+
+        # spike detection vs linreg fair
+        if fair is not None and spread <= spread_take_thresh:
+            if (
+                best_ask is not None
+                and fair - best_ask >= spike_thresh
+                and position < limit
+            ):
+                qty = min(limit - position, -best_ask_quantity)
+                if qty > 0:
+                    orders.append(buy(product, best_ask, qty))
+                    position += qty
+
+            if (
+                best_bid is not None
+                and best_bid - fair >= spike_thresh
+                and position > core_target
+            ):
+                qty = min(position - core_target, best_bid_quantity)
+                if qty > 0:
+                    orders.append(sell(product, best_bid, qty))
+                    position -= qty
+
+        # penny quotes — only post when price is at least pepper_edge better than fair
+        if fair is not None:
+            if best_bid is not None and best_bid + 1 <= fair - pepper_edge and position < limit:
                 orders.append(buy(product, best_bid + 1, limit - position))
-            if position > core_target:
+            if best_ask is not None and best_ask - 1 >= fair + pepper_edge and position > core_target:
                 orders.append(sell(product, best_ask - 1, position - core_target))
 
-        # # market making — use fair-based prices when a side is missing
-        # if best_bid is not None:
-        #     mm_bid = best_bid + 1
-        # elif best_ask is not None:
-        #     mm_bid = min(round(fair - half_spread_mm), best_ask - 12)
-        # else:
-        #     mm_bid = round(fair - half_spread_mm)
-        #
-        # if best_ask is not None:
-        #     mm_ask = best_ask - 1
-        # elif best_bid is not None:
-        #     mm_ask = max(round(fair + half_spread_mm), best_bid + 12)
-        # else:
-        #     mm_ask = round(fair + half_spread_mm)
-        #
-        # if mm_ask - mm_bid >= spread_market_thresh:
-        #     if position < limit:
-        #         orders.append(buy(product, mm_bid, limit - position))
-        #     if position > core_target:
-        #         orders.append(sell(product, mm_ask, position - core_target))
-
-        self.price_history.setdefault(product, []).append([
-            bids[0][0] if bids else None,
-            asks[0][0] if asks else None,
-        ])
+        self.price_history.setdefault(product, []).append([best_bid, best_ask])
         return orders
+
     def _fair_value(self, product: str, order_depth: OrderDepth) -> int | None:
         if product in self.FAIR_VALUES:
             return self.FAIR_VALUES[product]

@@ -84,11 +84,8 @@ PARAMS = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 
 
-    "TOMATOES_SPIKE_POSITION_GUARD": 24,
-} 
 class Trader:
     POSITION_LIMIT = {
         "EMERALDS": 80,

@@ -171,7 +171,7 @@ class Trader:
         "EMERALDS": False,
         "TOMATOES": False,
         "INTARIAN_PEPPER_ROOT": True,
-        "ASH_COATED_OSMIUM": True,
+        "ASH_COATED_OSMIUM": False,
     }
 
     MA_WINDOW = 10
