@@ -351,7 +351,7 @@ class Trader:
             "take_edge": 2,       # take when price is good to fair by at least this many ticks
             "mm_edge": 4,         # post passive quote when price is good to fair by at least this many ticks
             "limit_fade": 3,
-            "spike_factor": 0.75, # extra inventory floor per tick of bid spike quality above take_edge
+            "spike_factor": 1,    # extra inventory floor per tick of bid spike quality above take_edge
         }
         reserve = PARAMS["reserve"]
         take_edge = PARAMS["take_edge"]
@@ -374,10 +374,8 @@ class Trader:
         best_bid, best_bid_quantity = bids[0] if bids else (None, None)
 
         # aggressive accumulation up to core_target (first level only)
-        # only lift asks within 5 ticks of fair — ignore ask spikes above that
-        aa_ceiling = fair + 7
         buy_capacity = max(0, core_target - position)
-        if asks and buy_capacity > 0 and best_ask <= aa_ceiling:
+        if asks and buy_capacity > 0:
             size = min(buy_capacity, -best_ask_quantity)
             if size > 0:
                 orders.append(Order(product, best_ask, size))
