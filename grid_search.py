@@ -62,7 +62,7 @@ def _normalise_days(days: str | int | list) -> list[str]:
 def _run_backtest(trader_path: Path, days: str | int | list) -> dict[str, float]:
     """Runs prosperity4btest and parses the Risk metrics block."""
     proc = subprocess.run(
-        ["prosperity4btest", str(trader_path), "--no-progress", "--no-out",
+        ["prosperity4bt", str(trader_path), "--no-progress", "--no-out",
          *_normalise_days(days)],
         capture_output=True, text=True,
     )

@@ -231,46 +231,52 @@ class Trader:
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
 
-        best_ask, best_ask_quantity = asks[0] if asks else (None, None)
-        best_bid, best_bid_quantity = bids[0] if bids else (None, None)
+        best_ask, _ = asks[0] if asks else (None, None)
+        best_bid, _ = bids[0] if bids else (None, None)
 
         limit = self.POSITION_LIMITS.get(product, 80)
 
         # --- parameters ---
-        PARAMS = {
+        OS_CFG = {
             "base_fair": 10_000,
-            "alpha": 0.05,       # fair adjustment per unit of position (fair -= alpha * position)
-            "edge": 0,          # minimum ticks of edge vs fair required to post a quote
+            "alpha": 0.125,       # fair adjustment per unit of position (fair -= alpha * position)
+            "edge": 0.5,          # minimum ticks of edge vs fair required to post a quote
             "half_width": 8,
-            "spike_thresh": 10,
+            "take_edge": 1.5,
         }
-        base_fair = PARAMS["base_fair"]
-        alpha = PARAMS["alpha"]
-        edge = PARAMS["edge"]
-        half_width = PARAMS["half_width"]
-        spike_thresh = PARAMS["spike_thresh"]
+        base_fair = OS_CFG["base_fair"]
+        alpha = OS_CFG["alpha"]
+        edge = OS_CFG["edge"]
+        half_width = OS_CFG["half_width"]
+        take_edge = OS_CFG["take_edge"]
 
         fair = base_fair - alpha * position
 
-        # flatten position when price crosses fair
-        take_orders = market_take(
-            product, best_bid, best_bid_quantity,
-            best_ask, best_ask_quantity, fair, position,
-        )
-        for order in take_orders:
-            position += order.quantity
-        orders.extend(take_orders)
+        # flatten position when price crosses base fair
+        # take_orders = market_take(
+        #     product, best_bid, best_bid_quantity,
+        #     best_ask, best_ask_quantity, base_fair, position,
+        # )
+        # for order in take_orders:
+        #     position += order.quantity
+        # orders.extend(take_orders)
 
-        # take on price spikes
-        prev_bid, prev_ask = self._previous_bbo(product)
-        spike_orders = spike_take(
-            product, best_bid, best_bid_quantity,
-            best_ask, best_ask_quantity,
-            prev_bid, prev_ask, position, spike_thresh,
-        )
-        for order in spike_orders:
-            position += order.quantity
-        orders.extend(spike_orders)
+        # take when good to augmented fair by at least take_edge — sweep all order book levels
+        for ask_price in sorted(order_depth.sell_orders):
+            if ask_price > fair - take_edge or position >= limit:
+                break
+            qty = min(limit - position, -order_depth.sell_orders[ask_price])
+            if qty > 0:
+                orders.append(buy(product, ask_price, qty))
+                position += qty
+
+        for bid_price in sorted(order_depth.buy_orders, reverse=True):
+            if bid_price < fair + take_edge or position <= -limit:
+                break
+            qty = min(limit + position, order_depth.buy_orders[bid_price])
+            if qty > 0:
+                orders.append(sell(product, bid_price, qty))
+                position -= qty
 
         # fill missing side with moving average for market making only
         mm_bid, mm_ask = best_bid, best_ask
@@ -340,22 +346,26 @@ class Trader:
         limit = self.POSITION_LIMITS.get(product, 80)
 
         # --- parameters ---
-        PEPPER_CFG = {
+        PARAMS = {
             "reserve": 8,
-            "spread_market_thresh": 8,
-            "fair_take_margin": 2,
-            "half_spread_mm": 7,
+            "take_edge": 2,       # take when price is good to fair by at least this many ticks
+            "mm_edge": 4,         # post passive quote when price is good to fair by at least this many ticks
+            "limit_fade": 3,
+            "spike_factor": 1,    # extra inventory floor per tick of bid spike quality above take_edge
         }
-        reserve = PEPPER_CFG["reserve"]
-        spread_market_thresh = PEPPER_CFG["spread_market_thresh"]
-        fair_take_margin = PEPPER_CFG["fair_take_margin"]
-        half_spread_mm = PEPPER_CFG["half_spread_mm"]
+        reserve = PARAMS["reserve"]
+        take_edge = PARAMS["take_edge"]
+        mm_edge = PARAMS["mm_edge"]
+        limit_fade = PARAMS["limit_fade"]
+        spike_factor = PARAMS["spike_factor"]
 
         core_target = limit - reserve
 
         fair = self._pepper_fair(product, state)
         if fair is None:
             return orders
+        if position == limit:
+            fair -= limit_fade
 
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
@@ -364,60 +374,36 @@ class Trader:
         best_bid, best_bid_quantity = bids[0] if bids else (None, None)
 
         # aggressive accumulation up to core_target (first level only)
-        # skip if ask ticked up by 1 or 2 from previous (avoid buying into uptick)
-        _, prev_ask = self._previous_bbo(product)
-        ask_uptick = (best_ask is not None and prev_ask is not None
-                      and best_ask - prev_ask > 0)
         buy_capacity = max(0, core_target - position)
-        if asks and buy_capacity > 0 and not ask_uptick:
+        if asks and buy_capacity > 0:
             size = min(buy_capacity, -best_ask_quantity)
             if size > 0:
                 orders.append(Order(product, best_ask, size))
                 buy_capacity -= size
                 position += size
 
-        # spike taking: buy when ask is close to or below fair,
-        #               sell when bid is close to or above fair
-        if best_ask is not None and best_ask <= fair + fair_take_margin and position < limit:
+        # taking: buy when ask is at least take_edge below fair,
+        #         sell when bid is at least take_edge above fair
+        if best_ask is not None and fair - best_ask >= take_edge and position < limit:
             qty = min(limit - position, -best_ask_quantity)
             if qty > 0:
                 orders.append(buy(product, best_ask, qty))
                 position += qty
 
-        if best_bid is not None and best_bid >= fair - fair_take_margin and position > core_target:
-            qty = min(position - core_target, best_bid_quantity)
-            if qty > 0:
-                orders.append(sell(product, best_bid, qty))
-                position -= qty
+        if best_bid is not None and best_bid - fair >= take_edge:
+            spike_quality = best_bid - fair - take_edge  # ticks above the bare take_edge threshold
+            sell_floor = int(core_target + spike_factor * spike_quality)
+            if position > sell_floor:
+                qty = min(position - sell_floor, best_bid_quantity)
+                if qty > 0:
+                    orders.append(sell(product, best_bid, qty))
+                    position -= qty
 
-        # market making (v2 style — both sides must exist)
-        spread = best_ask - best_bid if (best_ask is not None and best_bid is not None) else 0
-        if spread >= spread_market_thresh and best_bid is not None and best_ask is not None:
-            if position < limit:
-                orders.append(buy(product, best_bid + 1, limit - position))
-            if position > core_target:
-                orders.append(sell(product, best_ask - 1, position - core_target))
-
-        # # market making — use fair-based prices when a side is missing
-        # if best_bid is not None:
-        #     mm_bid = best_bid + 1
-        # elif best_ask is not None:
-        #     mm_bid = min(round(fair - half_spread_mm), best_ask - 12)
-        # else:
-        #     mm_bid = round(fair - half_spread_mm)
-        #
-        # if best_ask is not None:
-        #     mm_ask = best_ask - 1
-        # elif best_bid is not None:
-        #     mm_ask = max(round(fair + half_spread_mm), best_bid + 12)
-        # else:
-        #     mm_ask = round(fair + half_spread_mm)
-        #
-        # if mm_ask - mm_bid >= spread_market_thresh:
-        #     if position < limit:
-        #         orders.append(buy(product, mm_bid, limit - position))
-        #     if position > core_target:
-        #         orders.append(sell(product, mm_ask, position - core_target))
+        # market making: post 1 tick inside spread when quote is at least mm_edge better than fair
+        if best_bid is not None and best_bid + 1 <= fair - mm_edge and position < limit:
+            orders.append(buy(product, best_bid + 1, limit - position))
+        if best_ask is not None and best_ask - 1 >= fair + mm_edge and position > core_target:
+            orders.append(sell(product, best_ask - 1, position - core_target))
 
         self.price_history.setdefault(product, []).append([
             bids[0][0] if bids else None,
