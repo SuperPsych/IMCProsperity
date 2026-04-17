@@ -1,71 +1,5 @@
 from datamodel import Order, OrderDepth, TradingState
-from typing import Any, Callable, Dict, List, Tuple
-import json
-
-
-class Logger:
-    def __init__(self) -> None:
-        self.logs = ""
-
-    def print(self, *objects: Any, sep: str = " ", end: str = "\n") -> None:
-        self.logs += sep.join(map(str, objects)) + end
-
-    def flush(self, state: TradingState, orders, conversions: int, trader_data: str) -> None:
-        for symbol, depth in state.order_depths.items():
-            bids = sorted(depth.buy_orders.items(), reverse=True)
-            asks = sorted(depth.sell_orders.items())
-
-            def get_level(side, i):
-                if i < len(side):
-                    return side[i]
-                return (None, None)
-
-            bid_levels = [get_level(bids, i) for i in range(3)]
-            ask_levels = [get_level(asks, i) for i in range(3)]
-
-            best_bid = bid_levels[0][0]
-            best_ask = ask_levels[0][0]
-
-            mid_price = (
-                (best_bid + best_ask) / 2
-                if best_bid is not None and best_ask is not None
-                else None
-            )
-
-            row = {
-                "timestamp": state.timestamp,
-                "product": symbol,
-                "bid_price_1": bid_levels[0][0],
-                "bid_volume_1": bid_levels[0][1],
-                "bid_price_2": bid_levels[1][0],
-                "bid_volume_2": bid_levels[1][1],
-                "bid_price_3": bid_levels[2][0],
-                "bid_volume_3": bid_levels[2][1],
-                "ask_price_1": ask_levels[0][0],
-                "ask_volume_1": ask_levels[0][1],
-                "ask_price_2": ask_levels[1][0],
-                "ask_volume_2": ask_levels[1][1],
-                "ask_price_3": ask_levels[2][0],
-                "ask_volume_3": ask_levels[2][1],
-                "mid_price": mid_price,
-                "own_trades": [
-                    (t.price, t.quantity, t.timestamp)
-                    for t in state.own_trades.get(symbol, [])
-                ],
-                "market_trades": [
-                    (t.price, t.quantity, t.timestamp)
-                    for t in state.market_trades.get(symbol, [])
-                ],
-                "position": state.position.get(symbol, 0),
-                "log": self.logs.strip(),
-            }
-
-            print(json.dumps(row))
-
-        self.logs = ""
-
-
-logger = Logger()
+from typing import Callable, Dict, List, Tuple
 
 
 def buy(product: str, price: int, quantity: int) -> Order:
@@ -188,10 +122,15 @@ class Trader:
         self.initial_fair: Dict[str, float | None] = {}
         # running sums for O(1) linear regression: y = a + b*x, x = step index
         self.linreg: Dict[str, Dict[str, float]] = {}
+        self._logs: List[str] = []
+
+    def _log(self, msg: str) -> None:
+        self._logs.append(msg)
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
-        logger.print(f"=== t={state.timestamp} positions={dict(state.position)} ===")
+        self._logs = []
+        self._log(f"t={state.timestamp} positions={dict(state.position)}")
 
         for product in self.TRADED_PRODUCTS:
             if product not in state.order_depths:
@@ -200,8 +139,8 @@ class Trader:
             result[product] = strategy(product, state)
 
         conversions = 0
-        trader_data = ""
-        logger.flush(state, result, conversions, trader_data)
+        trader_data = " | ".join(self._logs)
+        print(trader_data)
         return result, conversions, trader_data
 
     def _trade_default(self, product: str, state: TradingState) -> List[Order]:
@@ -260,7 +199,7 @@ class Trader:
         fair = blended_fair + pos_adj
 
         mid = (best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None else None
-        logger.print(
+        self._log(
             f"[OSMIUM] in pos={position} bb={best_bid}({best_bid_qty}) "
             f"ba={best_ask}({best_ask_qty}) mid={mid} "
             f"base_fair={base_fair} recent_mid={recent_mid} blended_fair={blended_fair:.3f} "
@@ -275,7 +214,7 @@ class Trader:
             qty = min(limit - position, -order_depth.sell_orders[ask_price])
             if qty > 0:
                 orders.append(buy(product, ask_price, qty))
-                logger.print(f"[OSMIUM] take_buy px={ask_price} qty={qty} edge={fair - ask_price:.3f}")
+                self._log(f"[OSMIUM] take_buy px={ask_price} qty={qty} edge={fair - ask_price:.3f}")
                 position += qty
         for bid_price in sorted(order_depth.buy_orders, reverse=True):
             if bid_price < fair + take_edge or position <= -limit:
@@ -283,7 +222,7 @@ class Trader:
             qty = min(limit + position, order_depth.buy_orders[bid_price])
             if qty > 0:
                 orders.append(sell(product, bid_price, qty))
-                logger.print(f"[OSMIUM] take_sell px={bid_price} qty={qty} edge={bid_price - fair:.3f}")
+                self._log(f"[OSMIUM] take_sell px={bid_price} qty={qty} edge={bid_price - fair:.3f}")
                 position -= qty
 
         # fill missing side with moving average for market making only
@@ -291,19 +230,19 @@ class Trader:
         ma = self._moving_avg(product)
         if mm_bid is None and ma is not None:
             mm_bid = int(min(ma - half_width, fair - half_width))
-            logger.print(f"[OSMIUM] mm_bid synth from ma={ma:.3f} -> {mm_bid}")
+            self._log(f"[OSMIUM] mm_bid synth from ma={ma:.3f} -> {mm_bid}")
         if mm_ask is None and ma is not None:
             mm_ask = int(max(ma + half_width, fair + half_width))
-            logger.print(f"[OSMIUM] mm_ask synth from ma={ma:.3f} -> {mm_ask}")
+            self._log(f"[OSMIUM] mm_ask synth from ma={ma:.3f} -> {mm_ask}")
 
         # penny the spread
         penny_orders = penny(product, mm_bid, mm_ask, fair, edge, position, limit)
         for o in penny_orders:
             side = "buy" if o.quantity > 0 else "sell"
-            logger.print(f"[OSMIUM] penny_{side} px={o.price} qty={o.quantity}")
+            self._log(f"[OSMIUM] penny_{side} px={o.price} qty={o.quantity}")
         orders.extend(penny_orders)
 
-        logger.print(f"[OSMIUM] out pos:{start_position}->{position} orders={len(orders)}")
+        self._log(f"[OSMIUM] out pos:{start_position}->{position} orders={len(orders)}")
 
         self._update_mid(product, best_bid, best_ask)
         last_bid, last_ask = self._previous_bbo(product)
@@ -402,7 +341,7 @@ class Trader:
         # prior fair: initial_mid (rounded to 1000) + 0.1 per tick
         prior_fair = self._pepper_fair(product, state)
         if prior_fair is None:
-            logger.print(f"[PEPPER] skip: no prior_fair yet pos={position}")
+            self._log(f"[PEPPER] skip: no prior_fair yet pos={position}")
             self.price_history.setdefault(product, []).append([
                 bids[0][0] if bids else None,
                 asks[0][0] if asks else None,
@@ -428,7 +367,7 @@ class Trader:
         fair = base_fair + pos_adj
 
         mid = (best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None else None
-        logger.print(
+        self._log(
             f"[PEPPER] in pos={position} bb={best_bid}({best_bid_quantity}) "
             f"ba={best_ask}({best_ask_quantity}) mid={mid} "
             f"prior_fair={prior_fair:.3f} linreg_fair={linreg_fair if linreg_fair is None else f'{linreg_fair:.3f}'} "
@@ -439,14 +378,14 @@ class Trader:
         # aggressive accumulation up to core_target — sweep all ask levels within ceiling
         aa_ceiling = fair + 8
         buy_capacity = max(0, core_target - position)
-        logger.print(f"[PEPPER] aa ceiling={aa_ceiling:.3f} capacity={buy_capacity}")
+        self._log(f"[PEPPER] aa ceiling={aa_ceiling:.3f} capacity={buy_capacity}")
         for ask_price, ask_qty in asks:
             if buy_capacity <= 0 or ask_price > aa_ceiling:
                 break
             size = min(buy_capacity, -ask_qty)
             if size > 0:
                 orders.append(Order(product, ask_price, size))
-                logger.print(f"[PEPPER] aa_buy px={ask_price} qty={size}")
+                self._log(f"[PEPPER] aa_buy px={ask_price} qty={size}")
                 buy_capacity -= size
                 position += size
 
@@ -457,7 +396,7 @@ class Trader:
             qty = min(limit - position, -order_depth.sell_orders[ask_price])
             if qty > 0:
                 orders.append(buy(product, ask_price, qty))
-                logger.print(f"[PEPPER] take_buy px={ask_price} qty={qty} edge={fair - ask_price:.3f}")
+                self._log(f"[PEPPER] take_buy px={ask_price} qty={qty} edge={fair - ask_price:.3f}")
                 position += qty
         for bid_price in sorted(order_depth.buy_orders, reverse=True):
             if bid_price < fair + take_edge or position <= core_target:
@@ -465,20 +404,20 @@ class Trader:
             qty = min(position - core_target, order_depth.buy_orders[bid_price])
             if qty > 0:
                 orders.append(sell(product, bid_price, qty))
-                logger.print(f"[PEPPER] take_sell px={bid_price} qty={qty} edge={bid_price - fair:.3f}")
+                self._log(f"[PEPPER] take_sell px={bid_price} qty={qty} edge={bid_price - fair:.3f}")
                 position -= qty
 
         # market making: post 1 tick inside spread when quote is at least mm_edge better than fair
         if best_bid is not None and best_bid + 1 <= fair - mm_edge and position < limit:
             qty = limit - position
             orders.append(buy(product, best_bid + 1, qty))
-            logger.print(f"[PEPPER] mm_buy px={best_bid + 1} qty={qty} edge={fair - (best_bid + 1):.3f}")
+            self._log(f"[PEPPER] mm_buy px={best_bid + 1} qty={qty} edge={fair - (best_bid + 1):.3f}")
         if best_ask is not None and best_ask - 1 >= fair + mm_edge and position > core_target:
             qty = position - core_target
             orders.append(sell(product, best_ask - 1, qty))
-            logger.print(f"[PEPPER] mm_sell px={best_ask - 1} qty={qty} edge={(best_ask - 1) - fair:.3f}")
+            self._log(f"[PEPPER] mm_sell px={best_ask - 1} qty={qty} edge={(best_ask - 1) - fair:.3f}")
 
-        logger.print(f"[PEPPER] out pos:{start_position}->{position} orders={len(orders)}")
+        self._log(f"[PEPPER] out pos:{start_position}->{position} orders={len(orders)}")
 
         self.price_history.setdefault(product, []).append([
             bids[0][0] if bids else None,
