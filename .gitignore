@@ -1,2 +1,5 @@
 /backtests
 /logs
+/data
+/TradingAlgorithms/____pycache__/
+*.pyc
