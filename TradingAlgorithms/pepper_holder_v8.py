@@ -191,8 +191,7 @@ class Trader:
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
-        #logger.print("timestamp:", state.timestamp)
-        logger.print("positions:", state.position)
+        logger.print(f"=== t={state.timestamp} positions={dict(state.position)} ===")
 
         for product in self.TRADED_PRODUCTS:
             if product not in state.order_depths:
@@ -229,33 +228,45 @@ class Trader:
         order_depth = state.order_depths[product]
         orders: List[Order] = []
         position = state.position.get(product, 0)
+        start_position = position
 
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
 
-        best_ask, _ = asks[0] if asks else (None, None)
-        best_bid, _ = bids[0] if bids else (None, None)
+        best_ask, best_ask_qty = asks[0] if asks else (None, None)
+        best_bid, best_bid_qty = bids[0] if bids else (None, None)
 
         limit = self.POSITION_LIMITS.get(product, 80)
 
         # --- parameters ---
-        PARAMS = {
+        OS_CFG = {
             "base_fair": 10_000,
             "alpha": 0.075,       # fair adjustment per unit of position (fair -= alpha * position)
             "edge": 0,            # minimum ticks of edge vs fair required to post a quote
             "half_width": 8,
             "take_edge": 0.6,
         }
-        base_fair = PARAMS["base_fair"]
-        alpha = PARAMS["alpha"]
-        edge = PARAMS["edge"]
-        half_width = PARAMS["half_width"]
-        take_edge = PARAMS["take_edge"]
+        base_fair = OS_CFG["base_fair"]
+        alpha = OS_CFG["alpha"]
+        edge = OS_CFG["edge"]
+        half_width = OS_CFG["half_width"]
+        take_edge = OS_CFG["take_edge"]
 
         # Blend base_fair (70%) with recent mid price (30%) for better quote placement
         mid_hist = self.mid_history.get(product, [])
         recent_mid = mid_hist[-1] if mid_hist else base_fair
-        fair = 0.70 * base_fair + 0.30 * recent_mid - alpha * position
+        blended_fair = 0.70 * base_fair + 0.30 * recent_mid
+        pos_adj = -alpha * position
+        fair = blended_fair + pos_adj
+
+        mid = (best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None else None
+        logger.print(
+            f"[OSMIUM] in pos={position} bb={best_bid}({best_bid_qty}) "
+            f"ba={best_ask}({best_ask_qty}) mid={mid} "
+            f"base_fair={base_fair} recent_mid={recent_mid} blended_fair={blended_fair:.3f} "
+            f"pos_adj={pos_adj:.3f} fair={fair:.3f} "
+            f"buy_zone<={fair - take_edge:.3f} sell_zone>={fair + take_edge:.3f}"
+        )
 
         # take when good to fair by at least take_edge — sweep all book levels
         for ask_price in sorted(order_depth.sell_orders):
@@ -264,6 +275,7 @@ class Trader:
             qty = min(limit - position, -order_depth.sell_orders[ask_price])
             if qty > 0:
                 orders.append(buy(product, ask_price, qty))
+                logger.print(f"[OSMIUM] take_buy px={ask_price} qty={qty} edge={fair - ask_price:.3f}")
                 position += qty
         for bid_price in sorted(order_depth.buy_orders, reverse=True):
             if bid_price < fair + take_edge or position <= -limit:
@@ -271,6 +283,7 @@ class Trader:
             qty = min(limit + position, order_depth.buy_orders[bid_price])
             if qty > 0:
                 orders.append(sell(product, bid_price, qty))
+                logger.print(f"[OSMIUM] take_sell px={bid_price} qty={qty} edge={bid_price - fair:.3f}")
                 position -= qty
 
         # fill missing side with moving average for market making only
@@ -278,12 +291,19 @@ class Trader:
         ma = self._moving_avg(product)
         if mm_bid is None and ma is not None:
             mm_bid = int(min(ma - half_width, fair - half_width))
+            logger.print(f"[OSMIUM] mm_bid synth from ma={ma:.3f} -> {mm_bid}")
         if mm_ask is None and ma is not None:
             mm_ask = int(max(ma + half_width, fair + half_width))
+            logger.print(f"[OSMIUM] mm_ask synth from ma={ma:.3f} -> {mm_ask}")
 
         # penny the spread
-        orders.extend(penny(product, mm_bid, mm_ask, fair,
-                            edge, position, limit))
+        penny_orders = penny(product, mm_bid, mm_ask, fair, edge, position, limit)
+        for o in penny_orders:
+            side = "buy" if o.quantity > 0 else "sell"
+            logger.print(f"[OSMIUM] penny_{side} px={o.price} qty={o.quantity}")
+        orders.extend(penny_orders)
+
+        logger.print(f"[OSMIUM] out pos:{start_position}->{position} orders={len(orders)}")
 
         self._update_mid(product, best_bid, best_ask)
         last_bid, last_ask = self._previous_bbo(product)
@@ -356,19 +376,20 @@ class Trader:
         order_depth = state.order_depths[product]
         orders: List[Order] = []
         position = state.position.get(product, 0)
+        start_position = position
         limit = self.POSITION_LIMITS.get(product, 80)
 
         # --- parameters ---
-        PEPPER_CFG = {
+        PARAMS = {
             "reserve": 8,
             "take_edge": 1.0,       # min ticks of edge vs fair to take
             "alpha": 0.1,           # fair -= alpha * excess position above core_target
             "mm_edge": 4,           # post passive quote when price is good to fair by at least this many ticks
         }
-        reserve = PEPPER_CFG["reserve"]
-        take_edge = PEPPER_CFG["take_edge"]
-        alpha = PEPPER_CFG["alpha"]
-        mm_edge = PEPPER_CFG["mm_edge"]
+        reserve = PARAMS["reserve"]
+        take_edge = PARAMS["take_edge"]
+        alpha = PARAMS["alpha"]
+        mm_edge = PARAMS["mm_edge"]
 
         core_target = limit - reserve
 
@@ -381,6 +402,7 @@ class Trader:
         # prior fair: initial_mid (rounded to 1000) + 0.1 per tick
         prior_fair = self._pepper_fair(product, state)
         if prior_fair is None:
+            logger.print(f"[PEPPER] skip: no prior_fair yet pos={position}")
             self.price_history.setdefault(product, []).append([
                 bids[0][0] if bids else None,
                 asks[0][0] if asks else None,
@@ -394,23 +416,37 @@ class Trader:
         # linreg adjustment: how much the actual price deviates from the prior
         linreg_fair = self._linreg_fair(product)
         if linreg_fair is not None:
-            fair = linreg_fair
+            base_fair = linreg_fair
+            fair_src = "linreg"
         else:
-            fair = prior_fair
+            base_fair = prior_fair
+            fair_src = "prior"
 
         # adjust fair down based on excess position (more willing to sell when long)
         excess = max(0, position - core_target)
-        fair -= alpha * excess
+        pos_adj = -alpha * excess
+        fair = base_fair + pos_adj
+
+        mid = (best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None else None
+        logger.print(
+            f"[PEPPER] in pos={position} bb={best_bid}({best_bid_quantity}) "
+            f"ba={best_ask}({best_ask_quantity}) mid={mid} "
+            f"prior_fair={prior_fair:.3f} linreg_fair={linreg_fair if linreg_fair is None else f'{linreg_fair:.3f}'} "
+            f"src={fair_src} base_fair={base_fair:.3f} excess={excess} pos_adj={pos_adj:.3f} "
+            f"fair={fair:.3f} core_target={core_target}"
+        )
 
         # aggressive accumulation up to core_target — sweep all ask levels within ceiling
         aa_ceiling = fair + 8
         buy_capacity = max(0, core_target - position)
+        logger.print(f"[PEPPER] aa ceiling={aa_ceiling:.3f} capacity={buy_capacity}")
         for ask_price, ask_qty in asks:
             if buy_capacity <= 0 or ask_price > aa_ceiling:
                 break
             size = min(buy_capacity, -ask_qty)
             if size > 0:
                 orders.append(Order(product, ask_price, size))
+                logger.print(f"[PEPPER] aa_buy px={ask_price} qty={size}")
                 buy_capacity -= size
                 position += size
 
@@ -421,6 +457,7 @@ class Trader:
             qty = min(limit - position, -order_depth.sell_orders[ask_price])
             if qty > 0:
                 orders.append(buy(product, ask_price, qty))
+                logger.print(f"[PEPPER] take_buy px={ask_price} qty={qty} edge={fair - ask_price:.3f}")
                 position += qty
         for bid_price in sorted(order_depth.buy_orders, reverse=True):
             if bid_price < fair + take_edge or position <= core_target:
@@ -428,13 +465,20 @@ class Trader:
             qty = min(position - core_target, order_depth.buy_orders[bid_price])
             if qty > 0:
                 orders.append(sell(product, bid_price, qty))
+                logger.print(f"[PEPPER] take_sell px={bid_price} qty={qty} edge={bid_price - fair:.3f}")
                 position -= qty
 
         # market making: post 1 tick inside spread when quote is at least mm_edge better than fair
         if best_bid is not None and best_bid + 1 <= fair - mm_edge and position < limit:
-            orders.append(buy(product, best_bid + 1, limit - position))
+            qty = limit - position
+            orders.append(buy(product, best_bid + 1, qty))
+            logger.print(f"[PEPPER] mm_buy px={best_bid + 1} qty={qty} edge={fair - (best_bid + 1):.3f}")
         if best_ask is not None and best_ask - 1 >= fair + mm_edge and position > core_target:
-            orders.append(sell(product, best_ask - 1, position - core_target))
+            qty = position - core_target
+            orders.append(sell(product, best_ask - 1, qty))
+            logger.print(f"[PEPPER] mm_sell px={best_ask - 1} qty={qty} edge={(best_ask - 1) - fair:.3f}")
+
+        logger.print(f"[PEPPER] out pos:{start_position}->{position} orders={len(orders)}")
 
         self.price_history.setdefault(product, []).append([
             bids[0][0] if bids else None,
