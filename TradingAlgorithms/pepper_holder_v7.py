@@ -10,7 +10,26 @@ class Logger:
     def print(self, *objects: Any, sep: str = " ", end: str = "\n") -> None:
         self.logs += sep.join(map(str, objects)) + end
 
-    def flush(self, state: TradingState, orders, conversions: int, trader_data: str) -> None:
+    @staticmethod
+    def _flatten(d: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for k, v in d.items():
+            key = f"{prefix}_{k}" if prefix else str(k)
+            if isinstance(v, dict):
+                out.update(Logger._flatten(v, key))
+            else:
+                out[key] = v
+        return out
+
+    def flush(
+        self,
+        state: TradingState,
+        orders,
+        conversions: int,
+        trader_data: str,
+        internal_state: Dict[str, Dict[str, Any]] | None = None,
+    ) -> None:
+        internal_state = internal_state or {}
         for symbol, depth in state.order_depths.items():
             bids = sorted(depth.buy_orders.items(), reverse=True)
             asks = sorted(depth.sell_orders.items())
@@ -59,8 +78,9 @@ class Logger:
                 "position": state.position.get(symbol, 0),
                 "log": self.logs.strip(),
             }
+            row.update(Logger._flatten(internal_state.get(symbol, {})))
 
-            print(json.dumps(row))
+            print(json.dumps(row, default=str))
 
         self.logs = ""
 
@@ -187,9 +207,12 @@ class Trader:
         self.mid_history: Dict[str, List[float]] = {}
         # running sums for O(1) linear regression: y = a + b*x, x = step index
         self.linreg: Dict[str, Dict[str, float]] = {}
+        # per-product snapshot of variables driving this tick's trading decision
+        self.internal_state: Dict[str, Dict[str, Any]] = {}
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
+        self.internal_state = {}
         #logger.print("timestamp:", state.timestamp)
         logger.print("positions:", state.position)
 
@@ -201,7 +224,7 @@ class Trader:
 
         conversions = 0
         trader_data = ""
-        logger.flush(state, result, conversions, trader_data)
+        logger.flush(state, result, conversions, trader_data, self.internal_state)
         return result, conversions, trader_data
 
     def _trade_default(self, product: str, state: TradingState) -> List[Order]:
@@ -228,6 +251,7 @@ class Trader:
         order_depth = state.order_depths[product]
         orders: List[Order] = []
         position = state.position.get(product, 0)
+        start_position = position
 
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
@@ -251,7 +275,11 @@ class Trader:
         half_width = OS_CFG["half_width"]
         take_edge = OS_CFG["take_edge"]
 
-        fair = base_fair - alpha * position
+        pos_adj = -alpha * position
+        fair = base_fair + pos_adj
+
+        take_buy_qty = 0
+        take_sell_qty = 0
 
         # take when good to fair by at least take_edge
         if best_ask is not None and best_ask_quantity is not None and fair - best_ask >= take_edge and position < limit:
@@ -259,29 +287,64 @@ class Trader:
             if qty > 0:
                 orders.append(buy(product, best_ask, qty))
                 position += qty
+                take_buy_qty = qty
         if best_bid is not None and best_bid_quantity is not None and best_bid - fair >= take_edge and position > -limit:
             qty = min(limit + position, best_bid_quantity)
             if qty > 0:
                 orders.append(sell(product, best_bid, qty))
                 position -= qty
+                take_sell_qty = qty
 
         # fill missing side with moving average for market making only
         mm_bid, mm_ask = best_bid, best_ask
+        mm_bid_synth = False
+        mm_ask_synth = False
         ma = self._moving_avg(product)
         if mm_bid is None and ma is not None:
             mm_bid = int(min(ma - half_width, fair - half_width))
+            mm_bid_synth = True
         if mm_ask is None and ma is not None:
             mm_ask = int(max(ma + half_width, fair + half_width))
+            mm_ask_synth = True
 
         # penny the spread
-        orders.extend(penny(product, mm_bid, mm_ask, fair,
-                            edge, position, limit))
+        penny_orders = penny(product, mm_bid, mm_ask, fair, edge, position, limit)
+        penny_buy = next((o for o in penny_orders if o.quantity > 0), None)
+        penny_sell = next((o for o in penny_orders if o.quantity < 0), None)
+        orders.extend(penny_orders)
 
         self._update_mid(product, best_bid, best_ask)
         last_bid, last_ask = self._previous_bbo(product)
         stored_bid = best_bid if best_bid is not None else last_bid
         stored_ask = best_ask if best_ask is not None else last_ask
         self.price_history.setdefault(product, []).append([stored_bid, stored_ask])
+
+        self.internal_state[product] = {
+            "params": OS_CFG,
+            "limit": limit,
+            "position_start": start_position,
+            "position_end": position,
+            "best_bid": best_bid,
+            "best_bid_qty": best_bid_quantity,
+            "best_ask": best_ask,
+            "best_ask_qty": best_ask_quantity,
+            "mid": (best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None else None,
+            "base_fair": base_fair,
+            "pos_adj": pos_adj,
+            "fair": fair,
+            "buy_zone_max": fair - take_edge,
+            "sell_zone_min": fair + take_edge,
+            "ma": ma,
+            "mm_bid": mm_bid,
+            "mm_ask": mm_ask,
+            "mm_bid_synth": mm_bid_synth,
+            "mm_ask_synth": mm_ask_synth,
+            "take_buy_qty": take_buy_qty,
+            "take_sell_qty": take_sell_qty,
+            "penny_buy": {"price": penny_buy.price, "qty": penny_buy.quantity} if penny_buy else None,
+            "penny_sell": {"price": penny_sell.price, "qty": penny_sell.quantity} if penny_sell else None,
+            "orders_emitted": len(orders),
+        }
         return orders
 
     def _previous_bbo(self, product: str) -> Tuple[int | None, int | None]:
@@ -311,21 +374,30 @@ class Trader:
         s["sxy"] += x * mid
 
     def _linreg_fair(self, product: str) -> float | None:
+        components = self._linreg_components(product)
+        if components is None:
+            return None
+        return components["predicted"]
+
+    def _linreg_components(self, product: str) -> Dict[str, float] | None:
+        """Return dict with intercept (a), slope (b), n, and next-step prediction, or None."""
         s = self.linreg.get(product)
         if s is None or s["n"] < 2:
             return None
         n, sx, sy, sxx, sxy = s["n"], s["sx"], s["sy"], s["sxx"], s["sxy"]
         denom = n * sxx - sx * sx
         if denom == 0:
-            return sy / n  # all same x — return mean
+            mean = sy / n
+            return {"n": n, "intercept": mean, "slope": 0.0, "predicted": mean}
         b = (n * sxy - sx * sy) / denom
         a = (sy - b * sx) / n
-        return a + b * n  # predict at next step index
+        return {"n": n, "intercept": a, "slope": b, "predicted": a + b * n}
 
     def _run_pepper_strategy(self, product: str, state: TradingState) -> List[Order]:
         order_depth = state.order_depths[product]
         orders: List[Order] = []
         position = state.position.get(product, 0)
+        start_position = position
         limit = self.POSITION_LIMITS.get(product, 80)
 
         # --- parameters ---
@@ -348,23 +420,50 @@ class Trader:
         best_ask, best_ask_quantity = asks[0] if asks else (None, None)
         best_bid, best_bid_quantity = bids[0] if bids else (None, None)
 
-        # update linear regression with current mid price
-        if best_bid is not None and best_ask is not None:
-            self._update_linreg(product, (best_bid + best_ask) / 2)
+        mid = (best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None else None
 
-        fair = self._linreg_fair(product)
-        if fair is None:
+        # update linear regression with current mid price
+        if mid is not None:
+            self._update_linreg(product, mid)
+
+        linreg = self._linreg_components(product)
+        fair_raw = linreg["predicted"] if linreg is not None else None
+        if fair_raw is None:
             self.price_history.setdefault(product, []).append([
                 bids[0][0] if bids else None,
                 asks[0][0] if asks else None,
             ])
+            self.internal_state[product] = {
+                "params": PARAMS,
+                "limit": limit,
+                "core_target": core_target,
+                "position_start": start_position,
+                "position_end": position,
+                "best_bid": best_bid,
+                "best_bid_qty": best_bid_quantity,
+                "best_ask": best_ask,
+                "best_ask_qty": best_ask_quantity,
+                "mid": mid,
+                "linreg": linreg,
+                "fair_raw": None,
+                "fair_final": None,
+                "fade_applied": False,
+                "aa_qty": 0,
+                "take_buy_qty": 0,
+                "take_sell_qty": 0,
+                "mm_buy_qty": 0,
+                "mm_sell_qty": 0,
+                "orders_emitted": 0,
+                "skipped_reason": "no_linreg_fit",
+            }
             return orders
 
         # fade fair down when at limit
-        if position == limit:
-            fair -= limit_fade
+        fade_applied = position == limit
+        fair = fair_raw - limit_fade if fade_applied else fair_raw
 
         # aggressive accumulation up to core_target (first level only)
+        aa_qty = 0
         buy_capacity = max(0, core_target - position)
         if asks and buy_capacity > 0:
             size = min(buy_capacity, -best_ask_quantity)
@@ -372,31 +471,73 @@ class Trader:
                 orders.append(Order(product, best_ask, size))
                 buy_capacity -= size
                 position += size
+                aa_qty = size
 
         # taking: buy when ask is at least take_edge below fair,
         #         sell when bid is at least take_edge above fair
+        take_buy_qty = 0
+        take_sell_qty = 0
         if best_ask is not None and fair - best_ask >= take_edge and position < limit:
             qty = min(limit - position, -best_ask_quantity)
             if qty > 0:
                 orders.append(buy(product, best_ask, qty))
                 position += qty
+                take_buy_qty = qty
 
         if best_bid is not None and best_bid - fair >= take_edge and position > core_target:
             qty = min(position - core_target, best_bid_quantity)
             if qty > 0:
                 orders.append(sell(product, best_bid, qty))
                 position -= qty
+                take_sell_qty = qty
 
         # market making: post 1 tick inside spread when quote is at least mm_edge better than fair
+        mm_buy_qty = 0
+        mm_sell_qty = 0
+        mm_buy_price = None
+        mm_sell_price = None
         if best_bid is not None and best_bid + 1 <= fair - mm_edge and position < limit:
-            orders.append(buy(product, best_bid + 1, limit - position))
+            mm_buy_qty = limit - position
+            mm_buy_price = best_bid + 1
+            orders.append(buy(product, mm_buy_price, mm_buy_qty))
         if best_ask is not None and best_ask - 1 >= fair + mm_edge and position > core_target:
-            orders.append(sell(product, best_ask - 1, position - core_target))
+            mm_sell_qty = position - core_target
+            mm_sell_price = best_ask - 1
+            orders.append(sell(product, mm_sell_price, mm_sell_qty))
 
         self.price_history.setdefault(product, []).append([
             bids[0][0] if bids else None,
             asks[0][0] if asks else None,
         ])
+
+        self.internal_state[product] = {
+            "params": PARAMS,
+            "limit": limit,
+            "core_target": core_target,
+            "position_start": start_position,
+            "position_end": position,
+            "best_bid": best_bid,
+            "best_bid_qty": best_bid_quantity,
+            "best_ask": best_ask,
+            "best_ask_qty": best_ask_quantity,
+            "mid": mid,
+            "linreg": linreg,
+            "fair_raw": fair_raw,
+            "fair_final": fair,
+            "fade_applied": fade_applied,
+            "buy_zone_max": fair - take_edge,
+            "sell_zone_min": fair + take_edge,
+            "mm_buy_threshold": fair - mm_edge,
+            "mm_sell_threshold": fair + mm_edge,
+            "aa_qty": aa_qty,
+            "take_buy_qty": take_buy_qty,
+            "take_sell_qty": take_sell_qty,
+            "mm_buy_qty": mm_buy_qty,
+            "mm_buy_price": mm_buy_price,
+            "mm_sell_qty": mm_sell_qty,
+            "mm_sell_price": mm_sell_price,
+            "orders_emitted": len(orders),
+        }
         return orders
 
     def _fair_value(self, product: str, order_depth: OrderDepth) -> int | None:

@@ -254,8 +254,7 @@ class LogVisualizer:
         """
         Parses a competition .log file (JSON) containing 'logs' and 'tradeHistory'.
         """
-        with open(log_path, 'r') as f:
-            data = json.load(f)
+        data = self._load_data(log_path)
 
         ob_records = []
         market_trades = []
@@ -320,6 +319,11 @@ class LogVisualizer:
         # 4. Reconstruct Algorithm State & Metrics
         if not self.prices.empty:
             self._compute_metrics()
+
+    def _load_data(self, log_path):
+        """Load a competition submission log as {'logs': [...], 'tradeHistory': [...]}."""
+        with open(log_path, 'r') as f:
+            return json.load(f)
 
     def _compute_metrics(self):
         """
@@ -550,3 +554,240 @@ class LogVisualizer:
         else:
             if not self.products: return
             widgets.interact(plot, product=widgets.Dropdown(options=self.products, description="Product:"))
+
+
+class SubmissionLogVisualizer(LogVisualizer):
+    """
+    Visualizer for logs produced by pepper_holder_v7-style traders, where each
+    row already carries flattened internal_state fields (fair, fair_raw, linreg_*, ...).
+
+    On top of LogVisualizer:
+      - 'fair' (unified from internal_state) is always plotted and shown in hover.
+      - A SelectMultiple dropdown lets you overlay any internal_state column on click.
+    """
+
+    BASE_COLS = {
+        'timestamp', 'product', 'mid_price', 'position', 'log',
+        'own_trades', 'market_trades', 'fair',
+        'bid_price_1', 'bid_price_2', 'bid_price_3',
+        'bid_volume_1', 'bid_volume_2', 'bid_volume_3',
+        'ask_price_1', 'ask_price_2', 'ask_price_3',
+        'ask_volume_1', 'ask_volume_2', 'ask_volume_3',
+    }
+
+    def _load_data(self, log_path):
+        """Accept both IMC submission JSON and prosperity4bt sectioned output."""
+        with open(log_path, 'r') as f:
+            text = f.read()
+
+        stripped = text.lstrip()
+        if stripped.startswith('{'):
+            return json.loads(text)
+
+        # prosperity4bt sectioned format: "Sandbox logs:" / "Activities log:" / "Trade History:"
+        sandbox_section = text.split("Activities log:", 1)[0]
+        sandbox_section = sandbox_section.split("Sandbox logs:\n", 1)[-1]
+
+        decoder = json.JSONDecoder()
+        logs = []
+        idx = 0
+        while idx < len(sandbox_section):
+            while idx < len(sandbox_section) and sandbox_section[idx].isspace():
+                idx += 1
+            if idx >= len(sandbox_section):
+                break
+            obj, end = decoder.raw_decode(sandbox_section, idx)
+            logs.append(obj)
+            idx = end
+
+        trades = []
+        if "Trade History:" in text:
+            trade_section = text.split("Trade History:", 1)[1]
+            # prosperity4bt emits trailing commas; strip them for strict json
+            trade_section = re.sub(r',\s*([}\]])', r'\1', trade_section)
+            trades = json.loads(trade_section)
+
+        return {"logs": logs, "tradeHistory": trades}
+
+    def _compute_metrics(self):
+        # Don't re-simulate fair — the rows already carry internal_state.
+        # Unify: pepper logs fair_final, osmium logs fair. Coalesce to a 'fair' column.
+        if 'fair_final' in self.prices.columns:
+            if 'fair' not in self.prices.columns:
+                self.prices['fair'] = pd.NA
+            mask = self.prices['fair_final'].notna()
+            self.prices.loc[mask, 'fair'] = self.prices.loc[mask, 'fair_final']
+
+        # Columns available for overlay selection.
+        self.internal_state_cols = sorted(
+            c for c in self.prices.columns if c not in self.BASE_COLS
+        )
+
+    def _available_cols(self, product):
+        df = self.prices[self.prices["product"] == product]
+        return tuple(
+            c for c in self.internal_state_cols
+            if c in df.columns and df[c].notna().any()
+        )
+
+    def _plot_interval(self, product, t0, t1, renderer=None,
+                       ymin=None, ymax=None, extra_cols=None):
+        extra_cols = list(extra_cols or [])
+        ob = self.prices[self.prices["product"] == product].copy()
+        curr_order_book = ob[(ob["timestamp"] >= t0) & (ob["timestamp"] <= t1)]
+
+        if curr_order_book.empty:
+            print(f"No order book data for {product} in this interval.")
+            return
+
+        idx = curr_order_book["timestamp"]
+        fig = go.Figure()
+
+        # Mid
+        if "mid_price" in curr_order_book.columns:
+            fig.add_trace(go.Scattergl(
+                x=idx, y=curr_order_book["mid_price"],
+                name="Mid Price", line=dict(width=2, color="blue"),
+                hovertemplate="Mid: %{y}<extra></extra>",
+            ))
+
+        # Fair (from internal_state, unified)
+        if 'fair' in curr_order_book.columns and curr_order_book['fair'].notna().any():
+            fair_series = pd.to_numeric(curr_order_book['fair'], errors='coerce')
+            fig.add_trace(go.Scattergl(
+                x=idx, y=fair_series,
+                name='Fair', line=dict(width=3, color="darkorange", dash="dash"),
+                hovertemplate="Fair: %{y:.3f}<extra></extra>",
+            ))
+
+        # Bids
+        for i in range(1, 4):
+            col = f"bid_price_{i}"
+            if col in curr_order_book.columns:
+                fig.add_trace(go.Scattergl(
+                    x=idx, y=curr_order_book[col],
+                    name=f"Bid {i}", customdata=curr_order_book[[f"bid_volume_{i}"]],
+                    hovertemplate="%{y} (Vol: %{customdata[0]})<extra></extra>",
+                    line=dict(color="green", dash="dot" if i > 1 else "solid"),
+                    opacity=1.0 - (i * 0.2),
+                ))
+        # Asks
+        for i in range(1, 4):
+            col = f"ask_price_{i}"
+            if col in curr_order_book.columns:
+                fig.add_trace(go.Scattergl(
+                    x=idx, y=curr_order_book[col],
+                    name=f"Ask {i}", customdata=curr_order_book[[f"ask_volume_{i}"]],
+                    hovertemplate="%{y} (Vol: %{customdata[0]})<extra></extra>",
+                    line=dict(color="red", dash="dot" if i > 1 else "solid"),
+                    opacity=1.0 - (i * 0.2),
+                ))
+
+        # User-selected internal_state overlays
+        for col in extra_cols:
+            if col not in curr_order_book.columns:
+                continue
+            s = curr_order_book[col]
+            numeric = pd.to_numeric(s, errors="coerce")
+            if numeric.notna().any():
+                fig.add_trace(go.Scattergl(
+                    x=idx, y=numeric, name=col,
+                    line=dict(width=1.5),
+                    hovertemplate=col + ": %{y}<extra></extra>",
+                ))
+            elif s.notna().any():
+                # Non-numeric (e.g. skipped_reason, mm_bid_synth) — hover-only trace
+                fig.add_trace(go.Scattergl(
+                    x=idx, y=[None] * len(s), name=col,
+                    mode="lines", line=dict(width=0), showlegend=True,
+                    text=s.astype(str),
+                    hovertemplate=col + ": %{text}<extra></extra>",
+                ))
+
+        # Own trades
+        if not self.trades.empty:
+            curr_trades = self.trades[self.trades["product"] == product].copy()
+            curr_trades = curr_trades[
+                (curr_trades["timestamp"] >= t0) & (curr_trades["timestamp"] <= t1)
+            ]
+            if not curr_trades.empty:
+                deduped_ob = curr_order_book.drop_duplicates("timestamp")[["timestamp", "position"]]
+                curr_trades = curr_trades.merge(deduped_ob, on="timestamp", how="left")
+                curr_trades["pos_before"] = curr_trades["position"].fillna("Unknown")
+
+                def calc_after(row):
+                    if row["pos_before"] == "Unknown":
+                        return "Unknown"
+                    return row["pos_before"] + (row["quantity"] if row["side"] == "BUY" else -row["quantity"])
+
+                curr_trades["pos_after"] = curr_trades.apply(calc_after, axis=1)
+
+                for side, color, symbol, name in [
+                    ("BUY", "lime", "triangle-up", "MY BUY"),
+                    ("SELL", "red", "triangle-down", "MY SELL"),
+                ]:
+                    subset = curr_trades[curr_trades["side"] == side]
+                    if subset.empty:
+                        continue
+                    max_qty = max(subset["quantity"].max(), 1)
+                    sizes = 6 + 10 * (subset["quantity"] / max_qty)
+                    fig.add_trace(go.Scattergl(
+                        x=subset["timestamp"], y=subset["price"],
+                        mode="markers", name=name,
+                        customdata=subset[["quantity", "pos_before", "pos_after"]],
+                        marker=dict(symbol=symbol, size=sizes, color=color,
+                                    line=dict(width=1, color="black")),
+                        hovertemplate="<b>" + name + "</b><br>Price: %{y}<br>"
+                                      "Vol: %{customdata[0]}<br>"
+                                      "Pos Before: %{customdata[1]}<br>"
+                                      "Pos After: %{customdata[2]}<extra></extra>",
+                    ))
+
+        layout_kwargs = dict(
+            title=f"{product} Order Book & Trades",
+            xaxis_title="Timestamp",
+            yaxis_title="Price",
+            legend=dict(x=1.02, y=1, xanchor="left", yanchor="top"),
+            margin=dict(r=150),
+            hovermode="x unified",
+        )
+        if ymin is not None or ymax is not None:
+            layout_kwargs["yaxis_range"] = [ymin, ymax]
+        fig.update_layout(**layout_kwargs)
+        fig.show(renderer=renderer)
+
+    def visualize_orderbook(self, product=None, t0=None, t1=None,
+                            renderer=None, ymin=None, ymax=None):
+        def plot(product, extra_cols):
+            ob = self.prices[self.prices["product"] == product]
+            if ob.empty:
+                return
+            start = t0 if t0 is not None else ob["timestamp"].min()
+            end = t1 if t1 is not None else ob["timestamp"].max()
+            self._plot_interval(product, start, end, renderer=renderer,
+                                ymin=ymin, ymax=ymax, extra_cols=list(extra_cols))
+
+        if product is not None:
+            opts = self._available_cols(product)
+            sm = widgets.SelectMultiple(
+                options=opts, value=(), description="State:",
+                rows=min(14, max(len(opts), 1)),
+                layout=widgets.Layout(width="60%"),
+            )
+            widgets.interact(plot, product=widgets.fixed(product), extra_cols=sm)
+        else:
+            if not self.products:
+                return
+            dd_product = widgets.Dropdown(options=self.products, description="Product:")
+            sm = widgets.SelectMultiple(
+                options=self._available_cols(self.products[0]),
+                value=(), description="State:",
+                rows=14, layout=widgets.Layout(width="60%"),
+            )
+
+            def _on_product_change(change):
+                sm.options = self._available_cols(change["new"])
+                sm.value = ()
+
+            dd_product.observe(_on_product_change, names="value")
+            widgets.interact(plot, product=dd_product, extra_cols=sm)
