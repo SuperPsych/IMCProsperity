@@ -78,8 +78,23 @@ def sell(product: str, price: int, quantity: int) -> Order:
 
 PARAMS = {
     "hydrogel_mean": 9990,
-    "hydrogel_alpha": 5.0,
-    "hydrogel_offset": 26,
+    "hydrogel_alpha": 0.5,
+    "hydrogel_offset": 20.0,
+
+    "velvetfruit_mean": 5250,
+    "velvetfruit_alpha": 2.0,
+    "velvetfruit_offset": 10.0,
+
+    "VEV_4000_mean": 1250.0, "VEV_4000_alpha": 1.0, "VEV_4000_offset": 2.0,
+    "VEV_4500_mean": 750.0,  "VEV_4500_alpha": 1.0, "VEV_4500_offset": 2.0,
+    "VEV_5000_mean": 255.0,  "VEV_5000_alpha": 1.0, "VEV_5000_offset": 2.0,
+    "VEV_5100_mean": 167.0,  "VEV_5100_alpha": 1.0, "VEV_5100_offset": 2.0,
+    "VEV_5200_mean": 95.5,   "VEV_5200_alpha": 1.0, "VEV_5200_offset": 2.0,
+    "VEV_5300_mean": 47.0,   "VEV_5300_alpha": 1.0, "VEV_5300_offset": 2.0,
+    "VEV_5400_mean": 16.0,   "VEV_5400_alpha": 1.0, "VEV_5400_offset": 2.0,
+    "VEV_5500_mean": 6.5,    "VEV_5500_alpha": 1.0, "VEV_5500_offset": 1.0,
+    "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 1.0, "VEV_6000_offset": 0.0,
+    "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 1.0, "VEV_6500_offset": 0.0,
 }
 
 
@@ -112,8 +127,8 @@ class Trader:
 
     ENABLE_STRATEGY: Dict[str, bool] = {
         "HYDROGEL_PACK": True,
-        "VELVETFRUIT_EXTRACT": False,
-        **{v: False for v in VEV_VOUCHERS},
+        "VELVETFRUIT_EXTRACT": True,
+        **{v: True for v in VEV_VOUCHERS},
     }
 
     MA_WINDOW = 10
@@ -171,10 +186,10 @@ class Trader:
         offset = PARAMS["hydrogel_offset"]
 
         take_buy_amount = round((mean-best_ask-offset)*alpha)
-        take_buy_amount = min(limit-1 - position, -best_ask_qty, take_buy_amount)
+        take_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
 
         take_sell_amount = round((best_bid-mean-offset)*alpha)
-        take_sell_amount = min(limit-1 + position, best_bid_qty, take_sell_amount)
+        take_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
   
         if take_buy_amount > 0:
             orders.append(buy(product, best_ask, take_buy_amount))
@@ -199,12 +214,90 @@ class Trader:
     def _trade_velvetfruit(self, product: str, state: TradingState) -> List[Order]:
         if not self.ENABLE_STRATEGY.get(product, False):
             return []
-        return []
+        order_depth = state.order_depths[product]
+        orders: List[Order] = []
+        position = state.position.get(product, 0)
+
+        asks = sorted(order_depth.sell_orders.items())
+        bids = sorted(order_depth.buy_orders.items(), reverse=True)
+
+        best_ask, best_ask_qty = asks[0] if asks else (None, None)
+        best_bid, best_bid_qty = bids[0] if bids else (None, None)
+
+        limit = self.POSITION_LIMITS.get(product, 200)
+        mean = PARAMS["velvetfruit_mean"]
+        alpha = PARAMS["velvetfruit_alpha"]
+        offset = PARAMS["velvetfruit_offset"]
+
+        take_buy_amount = round((mean-best_ask-offset)*alpha)
+        take_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
+
+        take_sell_amount = round((best_bid-mean-offset)*alpha)
+        take_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
+  
+        if take_buy_amount > 0:
+            orders.append(buy(product, best_ask, take_buy_amount))
+            position += take_buy_amount
+        elif take_sell_amount > 0:
+            orders.append(sell(product, best_bid, -take_sell_amount))
+            position -= take_sell_amount
+
+        make_buy_amount = round((mean-(best_bid+1)-offset)*alpha)
+        make_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
+
+        make_sell_amount = round(((best_ask-1)-mean-offset)*alpha)
+        make_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
+
+        if make_buy_amount > 0:
+            orders.append(buy(product, best_bid+1, make_buy_amount))
+        elif make_sell_amount > 0:
+            orders.append(sell(product, best_ask-1, -make_sell_amount))
+
+        return orders
 
     def _trade_voucher(self, product: str, state: TradingState) -> List[Order]:
         if not self.ENABLE_STRATEGY.get(product, False):
             return []
-        return []
+        order_depth = state.order_depths[product]
+        orders: List[Order] = []
+        position = state.position.get(product, 0)
+
+        asks = sorted(order_depth.sell_orders.items())
+        bids = sorted(order_depth.buy_orders.items(), reverse=True)
+
+        best_ask, best_ask_qty = asks[0] if asks else (None, None)
+        best_bid, best_bid_qty = bids[0] if bids else (None, None)
+
+        limit = self.POSITION_LIMITS.get(product, 300)
+        mean = PARAMS[f"{product}_mean"]
+        alpha = PARAMS[f"{product}_alpha"]
+        offset = PARAMS[f"{product}_offset"]
+
+        take_buy_amount = round((mean-best_ask-offset)*alpha)
+        take_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
+
+        take_sell_amount = round((best_bid-mean-offset)*alpha)
+        take_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
+
+        if take_buy_amount > 0:
+            orders.append(buy(product, best_ask, take_buy_amount))
+            position += take_buy_amount
+        elif take_sell_amount > 0:
+            orders.append(sell(product, best_bid, -take_sell_amount))
+            position -= take_sell_amount
+
+        make_buy_amount = round((mean-(best_bid+1)-offset)*alpha)
+        make_buy_amount = min(limit - position, -best_ask_qty, make_buy_amount)
+
+        make_sell_amount = round(((best_ask-1)-mean-offset)*alpha)
+        make_sell_amount = min(limit + position, best_bid_qty, make_sell_amount)
+
+        if make_buy_amount > 0:
+            orders.append(buy(product, best_bid+1, make_buy_amount))
+        elif make_sell_amount > 0:
+            orders.append(sell(product, best_ask-1, -make_sell_amount))
+
+        return orders
 
     def _previous_bbo(self, product: str) -> Tuple[int | None, int | None]:
         if self.price_history.get(product):
