@@ -79,25 +79,26 @@ def sell(product: str, price: int, quantity: int) -> Order:
 PARAMS = {
     "hydrogel_mean": 9990,
     "hydrogel_alpha": 300.0,
-    "hydrogel_offset": 25.0,
+    "hydrogel_offset": 29,
 
     "velvetfruit_mean": 5255,
     "velvetfruit_alpha": 300.0,
-    "velvetfruit_offset": 15.0,
+    "velvetfruit_offset": 15.6,
 
-    "VEV_4000_mean": 1250.0, "VEV_4000_alpha": 300.0, "VEV_4000_offset": 15.0,
-    "VEV_4500_mean": 750.0,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": 15.0,
-    "VEV_5000_mean": 255.0,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": 15.0,
-    "VEV_5100_mean": 167.0,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": 15.0,
-    "VEV_5200_mean": 95.5,   "VEV_5200_alpha": 300.0, "VEV_5200_offset": 11.0,
-    "VEV_5300_mean": 47.0,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": 5.0,
-    "VEV_5400_mean": 16.0,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": 2.0,
-    "VEV_5500_mean": 6.5,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": 1.0,
+    "VEV_4000_mean": 1250.0, "VEV_4000_alpha": 300.0, "VEV_4000_offset": 15.6,
+    "VEV_4500_mean": 750.0,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": 15.6,
+    "VEV_5000_mean": 255.0,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": 14.4,
+    "VEV_5100_mean": 167.2,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": 12.7,
+    "VEV_5200_mean": 98.1,   "VEV_5200_alpha": 300.0, "VEV_5200_offset": 9.7,
+    "VEV_5300_mean": 50.0,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": 6.2,
+    "VEV_5400_mean": 19.7,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": 3.4,
+    "VEV_5500_mean": 8.7,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": 1.7,
     "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 300.0, "VEV_6000_offset": 0.0,
     "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 300.0, "VEV_6500_offset": 0.0,
 
     "ewma_gamma": 1,
-    "ewma_gamma_opts": 1
+    "ewma_gamma_opts": 1,
+    "opt_decay": 2.5e-5
 }
 
 
@@ -294,6 +295,7 @@ class Trader:
                 gamma = PARAMS["ewma_gamma_opts"]
             PARAMS[f"{product}_mean"] = (1 - gamma) * mid + gamma * mean
 
+        PARAMS[f"{product}_mean"] -= PARAMS["opt_decay"]
 
         take_buy_amount = round((mean-best_ask-offset)*alpha)
         take_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
