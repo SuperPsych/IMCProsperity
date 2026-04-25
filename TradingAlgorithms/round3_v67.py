@@ -78,25 +78,26 @@ def sell(product: str, price: int, quantity: int) -> Order:
 
 PARAMS = {
     "hydrogel_mean": 9990,
-    "hydrogel_alpha": 0.5,
-    "hydrogel_offset": 20.0,
+    "hydrogel_alpha": 300.0,
+    "hydrogel_offset": 25.0,
 
-    "velvetfruit_mean": 5250,
-    "velvetfruit_alpha": 2.0,
-    "velvetfruit_offset": 12.0,
+    "velvetfruit_mean": 5255,
+    "velvetfruit_alpha": 300.0,
+    "velvetfruit_offset": 15.0,
 
-    "VEV_4000_mean": 1250.0, "VEV_4000_alpha": 1.0, "VEV_4000_offset": 12.0,
-    "VEV_4500_mean": 750.0,  "VEV_4500_alpha": 1.0, "VEV_4500_offset": 12.0,
-    "VEV_5000_mean": 255.0,  "VEV_5000_alpha": 1.0, "VEV_5000_offset": 12.0,
-    "VEV_5100_mean": 167.0,  "VEV_5100_alpha": 1.0, "VEV_5100_offset": 9.0,
-    "VEV_5200_mean": 95.5,   "VEV_5200_alpha": 1.0, "VEV_5200_offset": 6.0,
-    "VEV_5300_mean": 47.0,   "VEV_5300_alpha": 1.0, "VEV_5300_offset": 3.0,
-    "VEV_5400_mean": 16.0,   "VEV_5400_alpha": 1.0, "VEV_5400_offset": 1.0,
-    "VEV_5500_mean": 6.5,    "VEV_5500_alpha": 1.0, "VEV_5500_offset": 1.0,
-    "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 1.0, "VEV_6000_offset": 0.0,
-    "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 1.0, "VEV_6500_offset": 0.0,
+    "VEV_4000_mean": 1250.0, "VEV_4000_alpha": 300.0, "VEV_4000_offset": 15.0,
+    "VEV_4500_mean": 750.0,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": 15.0,
+    "VEV_5000_mean": 255.0,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": 15.0,
+    "VEV_5100_mean": 167.0,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": 15.0,
+    "VEV_5200_mean": 95.5,   "VEV_5200_alpha": 300.0, "VEV_5200_offset": 11.0,
+    "VEV_5300_mean": 47.0,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": 5.0,
+    "VEV_5400_mean": 16.0,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": 2.0,
+    "VEV_5500_mean": 6.5,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": 1.0,
+    "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 300.0, "VEV_6000_offset": 0.0,
+    "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 300.0, "VEV_6500_offset": 0.0,
 
-    "ewma_gamma": 0.9997
+    "ewma_gamma": 1,
+    "ewma_gamma_opts": 1
 }
 
 
@@ -288,7 +289,10 @@ class Trader:
         # ewma
         if best_ask and best_bid:
             mid = (best_ask + best_bid) / 2
-            PARAMS[f"{product}_mean"] = (1 - PARAMS["ewma_gamma"]) * mid + (PARAMS["ewma_gamma"]) * mean
+            gamma = PARAMS["ewma_gamma"]
+            if int(product[4:8]) >= 5200:
+                gamma = PARAMS["ewma_gamma_opts"]
+            PARAMS[f"{product}_mean"] = (1 - gamma) * mid + gamma * mean
 
 
         take_buy_amount = round((mean-best_ask-offset)*alpha)
