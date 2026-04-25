@@ -76,6 +76,13 @@ def sell(product: str, price: int, quantity: int) -> Order:
     return Order(product, price, -abs(quantity))
 
 
+PARAMS = {
+    "hydrogel_mean": 9990,
+    "hydrogel_alpha": 5.0,
+    "hydrogel_offset": 26,
+}
+
+
 VEV_VOUCHERS = [
     "VEV_4000",
     "VEV_4500",
@@ -159,16 +166,34 @@ class Trader:
         best_bid, best_bid_qty = bids[0] if bids else (None, None)
 
         limit = self.POSITION_LIMITS.get(product, 200)
-        mean = 9990
-        alpha = 0.1
-        offset = 2
+        mean = PARAMS["hydrogel_mean"]
+        alpha = PARAMS["hydrogel_alpha"]
+        offset = PARAMS["hydrogel_offset"]
 
-        buy_amount = round((mean-best_ask-offset)*alpha)
-        sell_amount = round((best_bid-mean-offset)*alpha)
-        if buy_amount > 0 and position < limit:
-            orders.append(buy(product, best_ask, min(limit - position, best_ask_qty, buy_amount)))
-        elif sell_amount > 0 and position > -limit:
-            orders.append(sell(product, best_bid, min(limit + position, best_bid_qty, sell_amount)))
+        take_buy_amount = round((mean-best_ask-offset)*alpha)
+        take_buy_amount = min(limit-1 - position, -best_ask_qty, take_buy_amount)
+
+        take_sell_amount = round((best_bid-mean-offset)*alpha)
+        take_sell_amount = min(limit-1 + position, best_bid_qty, take_sell_amount)
+  
+        if take_buy_amount > 0:
+            orders.append(buy(product, best_ask, take_buy_amount))
+            position += take_buy_amount
+        elif take_sell_amount > 0:
+            orders.append(sell(product, best_bid, -take_sell_amount))
+            position -= take_sell_amount
+
+        make_buy_amount = round((mean-(best_bid+1)-offset)*alpha)
+        make_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
+
+        make_sell_amount = round(((best_ask-1)-mean-offset)*alpha)
+        make_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
+
+        if make_buy_amount > 0:
+            orders.append(buy(product, best_bid+1, make_buy_amount))
+        elif make_sell_amount > 0:
+            orders.append(sell(product, best_ask-1, -make_sell_amount))
+
         return orders
 
     def _trade_velvetfruit(self, product: str, state: TradingState) -> List[Order]:
