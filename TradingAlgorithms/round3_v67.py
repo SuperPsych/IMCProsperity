@@ -75,26 +75,29 @@ def buy(product: str, price: int, quantity: int) -> Order:
 def sell(product: str, price: int, quantity: int) -> Order:
     return Order(product, price, -abs(quantity))
 
+HYDRO_OFFSET = 0.86
+VELVET_OFFSET = 1.0
+OPT_OFFSET = 0.67
 
 PARAMS = {
     "hydrogel_mean": 9990,
     "hydrogel_alpha": 300.0,
-    "hydrogel_offset": .9*31,
+    "hydrogel_offset": HYDRO_OFFSET*31.9,
 
     "velvetfruit_mean": 5255,
     "velvetfruit_alpha": 300.0,
-    "velvetfruit_offset": 15.6,
+    "velvetfruit_offset": VELVET_OFFSET*15.6,
 
-    "VEV_4000_mean": 1250.0, "VEV_4000_alpha": 300.0, "VEV_4000_offset": 15.6,
-    "VEV_4500_mean": 750.0,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": 15.6,
-    "VEV_5000_mean": 255.0,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": .67*14.4,
-    "VEV_5100_mean": 167.2,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": .67*12.7,
-    "VEV_5200_mean": 98.1,   "VEV_5200_alpha": 300.0, "VEV_5200_offset": .67*9.7,
-    "VEV_5300_mean": 50.0,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": .67*6.2,
-    "VEV_5400_mean": 19.7,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": .67*3.4,
-    "VEV_5500_mean": 8.7,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": .67*1.7,
-    "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 300.0, "VEV_6000_offset": .67*0.0,
-    "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 300.0, "VEV_6500_offset": .67*0.0,
+    "VEV_4000_mean": 1250.0, "VEV_4000_alpha": 300.0, "VEV_4000_offset": VELVET_OFFSET*15.6,
+    "VEV_4500_mean": 750.0,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": VELVET_OFFSET*15.6,
+    "VEV_5000_mean": 255.0,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": OPT_OFFSET*14.4,
+    "VEV_5100_mean": 167.2,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": OPT_OFFSET*12.7,
+    "VEV_5200_mean": 98.1,   "VEV_5200_alpha": 300.0, "VEV_5200_offset": OPT_OFFSET*9.7,
+    "VEV_5300_mean": 50.0,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": OPT_OFFSET*6.2,
+    "VEV_5400_mean": 19.7,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": OPT_OFFSET*3.4,
+    "VEV_5500_mean": 8.7,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": OPT_OFFSET*1.7,
+    "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 300.0, "VEV_6000_offset": OPT_OFFSET*0.0,
+    "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 300.0, "VEV_6500_offset": OPT_OFFSET*0.0,
 
     "ewma_gamma": 1,
     "ewma_gamma_opts": 1,
