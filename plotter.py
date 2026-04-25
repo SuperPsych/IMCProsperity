@@ -14,14 +14,20 @@ class Plotter:
         # If trades_path is given, load CSV files directly (single path or list)
         if trades_path is not None:
             if isinstance(prices_path, list):
-                self.prices = pd.concat(
-                    [pd.read_csv(p, delimiter=";") for p in prices_path],
-                    ignore_index=True,
-                )
-                self.trades = pd.concat(
-                    [pd.read_csv(t, delimiter=";") for t in trades_path],
-                    ignore_index=True,
-                ).rename(columns={"symbol": "product"})
+                price_frames = []
+                trade_frames = []
+                cumulative_offset = 0
+                for p, t in zip(prices_path, trades_path):
+                    df_p = pd.read_csv(p, delimiter=";")
+                    df_t = pd.read_csv(t, delimiter=";")
+                    day_max = int(df_p["timestamp"].max()) if "timestamp" in df_p.columns and len(df_p) else 0
+                    df_p["timestamp"] = df_p["timestamp"] + cumulative_offset
+                    df_t["timestamp"] = df_t["timestamp"] + cumulative_offset
+                    price_frames.append(df_p)
+                    trade_frames.append(df_t)
+                    cumulative_offset += day_max + 100
+                self.prices = pd.concat(price_frames, ignore_index=True)
+                self.trades = pd.concat(trade_frames, ignore_index=True).rename(columns={"symbol": "product"})
             else:
                 self.prices = pd.read_csv(prices_path, delimiter=";")
                 self.trades = pd.read_csv(trades_path, delimiter=";").rename(columns={
