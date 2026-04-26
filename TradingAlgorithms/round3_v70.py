@@ -1,7 +1,6 @@
 from datamodel import Order, OrderDepth, TradingState
 from typing import Any, Callable, Dict, List, Tuple
 import json
-import os
 
 
 class Logger:
@@ -76,30 +75,30 @@ def buy(product: str, price: int, quantity: int) -> Order:
 def sell(product: str, price: int, quantity: int) -> Order:
     return Order(product, price, -abs(quantity))
 
-HYDRO_OFFSET = 0.86
-VELVET_OFFSET = 1.0
-OPT_OFFSET = 0.67
+HYDRO_OFFSET = 1
+VELVET_OFFSET = 1
+OPT_OFFSET = 1
 
 PARAMS = {
     "hydrogel_mean": 9990,
     "hydrogel_alpha": 300.0,
     "hydrogel_offset": HYDRO_OFFSET*31.9,
 
-    "velvetfruit_mean": 5255,
+    "velvetfruit_mean": 5250,
     "velvetfruit_alpha": 300.0,
     "velvetfruit_offset": VELVET_OFFSET*15.6,
 
     # voucher fair = mean + slope * timestamp ; mean is the t=0 intercept
-    "VEV_4000_mean": 1250.0, "VEV_4000_alpha": 300.0, "VEV_4000_offset": VELVET_OFFSET*15.6, "VEV_4000_slope": -2.5e-7,
-    "VEV_4500_mean": 750.0,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": VELVET_OFFSET*15.6, "VEV_4500_slope": -2.5e-7,
-    "VEV_5000_mean": 257.6,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": OPT_OFFSET*14.4,    "VEV_5000_slope": -2.5e-7,
-    "VEV_5100_mean": 173.8,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": OPT_OFFSET*12.7,    "VEV_5100_slope": -2.5e-7,
-    "VEV_5200_mean": 104.7,   "VEV_5200_alpha": 300.0, "VEV_5200_offset": OPT_OFFSET*9.7,    "VEV_5200_slope": -2.5e-7,
-    "VEV_5300_mean": 50.0,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": OPT_OFFSET*6.2,     "VEV_5300_slope": -2.5e-7,
-    "VEV_5400_mean": 19.7,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": OPT_OFFSET*3.4,     "VEV_5400_slope": -2.5e-7,
-    "VEV_5500_mean": 8.7,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": OPT_OFFSET*1.7,     "VEV_5500_slope": -2.5e-7,
-    "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 300.0, "VEV_6000_offset": OPT_OFFSET*0.0,     "VEV_6000_slope": -2.5e-7,
-    "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 300.0, "VEV_6500_offset": OPT_OFFSET*0.0,     "VEV_6500_slope": -2.5e-7,
+    "VEV_4000_mean": 1250.11, "VEV_4000_alpha": 300.0, "VEV_4000_offset": VELVET_OFFSET*15.6, "VEV_4000_slope": 0,
+    "VEV_4500_mean": 750.11,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": VELVET_OFFSET*15.6, "VEV_4500_slope": 0,
+    "VEV_5000_mean": 257.72,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": OPT_OFFSET*14.4,    "VEV_5000_slope": -1.80e-06,
+    "VEV_5100_mean": 173.92,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": OPT_OFFSET*12.7,    "VEV_5100_slope": -4.74e-06,
+    "VEV_5200_mean": 104,  "VEV_5200_alpha": 300.0, "VEV_5200_offset": OPT_OFFSET*9.7,    "VEV_5200_slope": -5.559e-06,
+    "VEV_5300_mean": 56.875,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": OPT_OFFSET*6.2,     "VEV_5300_slope": -5.898e-06,
+    "VEV_5400_mean": 19.67,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": OPT_OFFSET*3.4,     "VEV_5400_slope": -2.48e-06,
+    "VEV_5500_mean": 8.7,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": OPT_OFFSET*1.7,     "VEV_5500_slope": -1.37e-06,
+    "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 300.0, "VEV_6000_offset": OPT_OFFSET*0.0,     "VEV_6000_slope": 0,
+    "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 300.0, "VEV_6500_offset": OPT_OFFSET*0.0,     "VEV_6500_slope": 0,
 
     "ewma_gamma": 1,
     "ewma_gamma_opts": 1,
@@ -295,7 +294,7 @@ class Trader:
         # linear approximation: fair at global time t = base_mean + slope * (day*1e6 + ts)
         # state.timestamp resets per day; PROSPERITY4BT_DAY (set by the backtester)
         # gives the day index so the slope continues across day boundaries.
-        day = int(os.environ.get("PROSPERITY4BT_DAY", "0"))
+        day = 3
         effective_t = day * 1_000_000 + state.timestamp
         mean = base_mean + slope * effective_t
 
