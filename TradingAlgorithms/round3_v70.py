@@ -89,14 +89,14 @@ PARAMS = {
     "velvetfruit_offset": VELVET_OFFSET*15.6,
 
     # voucher fair = mean + slope * timestamp ; mean is the t=0 intercept
-    "VEV_4000_mean": 1250.11, "VEV_4000_alpha": 300.0, "VEV_4000_offset": VELVET_OFFSET*15.6, "VEV_4000_slope": 0,
-    "VEV_4500_mean": 750.11,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": VELVET_OFFSET*15.6, "VEV_4500_slope": 0,
-    "VEV_5000_mean": 257.72,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": OPT_OFFSET*14.4,    "VEV_5000_slope": -1.80e-06,
-    "VEV_5100_mean": 173.92,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": OPT_OFFSET*12.7,    "VEV_5100_slope": -4.74e-06,
-    "VEV_5200_mean": 104,  "VEV_5200_alpha": 300.0, "VEV_5200_offset": OPT_OFFSET*9.7,    "VEV_5200_slope": -5.559e-06,
-    "VEV_5300_mean": 56.875,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": OPT_OFFSET*6.2,     "VEV_5300_slope": -5.898e-06,
-    "VEV_5400_mean": 19.67,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": OPT_OFFSET*3.4,     "VEV_5400_slope": -2.48e-06,
-    "VEV_5500_mean": 8.7,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": OPT_OFFSET*1.7,     "VEV_5500_slope": -1.37e-06,
+    "VEV_4000_mean": 1250, "VEV_4000_alpha": 300.0, "VEV_4000_offset": VELVET_OFFSET*15.6, "VEV_4000_slope": 0,
+    "VEV_4500_mean": 750,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": VELVET_OFFSET*15.6, "VEV_4500_slope": 0,
+    "VEV_5000_mean": 257,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": OPT_OFFSET*14.4,    "VEV_5000_slope": -1.485e-06,
+    "VEV_5100_mean": 172.6322,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": OPT_OFFSET*12.7,    "VEV_5100_slope": -4.096e-06,
+    "VEV_5200_mean": 103.9988,  "VEV_5200_alpha": 300.0, "VEV_5200_offset": OPT_OFFSET*9.7,    "VEV_5200_slope": -5.559e-06,
+    "VEV_5300_mean": 56.8749,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": OPT_OFFSET*6.2,     "VEV_5300_slope": -5.898e-06,
+    "VEV_5400_mean": 20.5659,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": OPT_OFFSET*3.4,     "VEV_5400_slope": -3.231e-06,
+    "VEV_5500_mean": 9.3823,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": OPT_OFFSET*1.7,     "VEV_5500_slope": -1.838e-06,
     "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 300.0, "VEV_6000_offset": OPT_OFFSET*0.0,     "VEV_6000_slope": 0,
     "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 300.0, "VEV_6500_offset": OPT_OFFSET*0.0,     "VEV_6500_slope": 0,
 
