@@ -80,28 +80,28 @@ VELVET_OFFSET = 1
 OPT_OFFSET = 1
 
 PARAMS = {
+    # Each strategy uses a binary-gate threshold: trade full size if and only if the
+    # market price is at least `threshold` away from the model's fair value.
     "hydrogel_mean": 9990,
-    "hydrogel_alpha": 300.0,
-    "hydrogel_offset": HYDRO_OFFSET*31.9,
+    "hydrogel_threshold": HYDRO_OFFSET*31.9,
 
     "velvetfruit_mean": 5250,
-    "velvetfruit_alpha": 300.0,
-    "velvetfruit_offset": VELVET_OFFSET*15.6,
+    "velvetfruit_threshold": VELVET_OFFSET*15.6,
 
-    # voucher fair = mean + slope * timestamp ; mean is the t=0 intercept
-    "VEV_4000_mean": 1250, "VEV_4000_alpha": 300.0, "VEV_4000_offset": VELVET_OFFSET*15.6, "VEV_4000_slope": 0,
-    "VEV_4500_mean": 750,  "VEV_4500_alpha": 300.0, "VEV_4500_offset": VELVET_OFFSET*15.6, "VEV_4500_slope": 0,
-    "VEV_5000_mean": 257,  "VEV_5000_alpha": 300.0, "VEV_5000_offset": OPT_OFFSET*14.4,    "VEV_5000_slope": -1.485e-06,
-    "VEV_5100_mean": 172.6322,  "VEV_5100_alpha": 300.0, "VEV_5100_offset": OPT_OFFSET*12.7,    "VEV_5100_slope": -4.096e-06,
-    "VEV_5200_mean": 103.9988,  "VEV_5200_alpha": 300.0, "VEV_5200_offset": OPT_OFFSET*9.7,    "VEV_5200_slope": -5.559e-06,
-    "VEV_5300_mean": 56.8749,   "VEV_5300_alpha": 300.0, "VEV_5300_offset": OPT_OFFSET*6.2,     "VEV_5300_slope": -5.898e-06,
-    "VEV_5400_mean": 20.5659,   "VEV_5400_alpha": 300.0, "VEV_5400_offset": OPT_OFFSET*3.4,     "VEV_5400_slope": -3.231e-06,
-    "VEV_5500_mean": 9.3823,    "VEV_5500_alpha": 300.0, "VEV_5500_offset": OPT_OFFSET*1.7,     "VEV_5500_slope": -1.838e-06,
-    "VEV_6000_mean": 0.5,    "VEV_6000_alpha": 300.0, "VEV_6000_offset": OPT_OFFSET*0.0,     "VEV_6000_slope": 0,
-    "VEV_6500_mean": 0.5,    "VEV_6500_alpha": 300.0, "VEV_6500_offset": OPT_OFFSET*0.0,     "VEV_6500_slope": 0,
-
-    "ewma_gamma": 1,
-    "ewma_gamma_opts": 1,
+    # voucher fair = mean + slope*t + quad*t^2  (with t = day*1e6 + ts), except where overridden:
+    #   VEV_5200 uses power-law form: fair = pl_a*(pl_T - t)^pl_b + pl_c  (T=8M)
+    # All option fits trained on ATM-only ticks (|underlying-5250|=0) over days 0-3.
+    "VEV_4000_mean": 1250, "VEV_4000_threshold": VELVET_OFFSET*15.6, "VEV_4000_slope": 0,           "VEV_4000_quad": 0,
+    "VEV_4500_mean": 750,  "VEV_4500_threshold": VELVET_OFFSET*15.6, "VEV_4500_slope": 0,           "VEV_4500_quad": 0,
+    "VEV_5000_mean": 257,  "VEV_5000_threshold": OPT_OFFSET*14.4,    "VEV_5000_slope": -1.485e-06,  "VEV_5000_quad": 0,
+    "VEV_5100_mean": 172.6322,  "VEV_5100_threshold": OPT_OFFSET*12.7, "VEV_5100_slope": -4.096e-06, "VEV_5100_quad": 0,
+    "VEV_5200_threshold": OPT_OFFSET*9.7,
+    "VEV_5200_pl_a": 29027.3, "VEV_5200_pl_b": 0.001, "VEV_5200_pl_c": -29390.8016, "VEV_5200_pl_T": 8_000_000,
+    "VEV_5300_mean": 51.026734, "VEV_5300_threshold": OPT_OFFSET*6.2, "VEV_5300_slope": -1.351935e-06, "VEV_5300_quad": -8.547527e-13,
+    "VEV_5400_mean": 20.5659,   "VEV_5400_threshold": OPT_OFFSET*3.4, "VEV_5400_slope": -3.231e-06, "VEV_5400_quad": 0,
+    "VEV_5500_mean": 9.3823,    "VEV_5500_threshold": OPT_OFFSET*1.7, "VEV_5500_slope": -1.838e-06, "VEV_5500_quad": 0,
+    "VEV_6000_mean": 0.5,       "VEV_6000_threshold": OPT_OFFSET*0.0, "VEV_6000_slope": 0,          "VEV_6000_quad": 0,
+    "VEV_6500_mean": 0.5,       "VEV_6500_threshold": OPT_OFFSET*0.0, "VEV_6500_slope": 0,          "VEV_6500_quad": 0,
 }
 
 
@@ -184,43 +184,13 @@ class Trader:
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
 
-        best_ask, best_ask_qty = asks[0] if asks else (None, None)
-        best_bid, best_bid_qty = bids[0] if bids else (None, None)
-
         limit = self.POSITION_LIMITS.get(product, 200)
         mean = PARAMS["hydrogel_mean"]
-        alpha = PARAMS["hydrogel_alpha"]
-        offset = PARAMS["hydrogel_offset"]
+        threshold = PARAMS["hydrogel_threshold"]
 
-        # ewma
-        if best_ask and best_bid:
-            mid = (best_ask + best_bid) / 2
-            PARAMS["hydrogel_mean"] = (1 - PARAMS["ewma_gamma"]) * mid + (PARAMS["ewma_gamma"]) * mean
-
-        take_buy_amount = round((mean-best_ask-offset)*alpha)
-        take_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
-
-        take_sell_amount = round((best_bid-mean-offset)*alpha)
-        take_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
-
-        if take_buy_amount > 0:
-            orders.append(buy(product, best_ask, take_buy_amount))
-            position += take_buy_amount
-        elif take_sell_amount > 0:
-            orders.append(sell(product, best_bid, -take_sell_amount))
-            position -= take_sell_amount
-
-        make_buy_amount = round((mean-(best_bid+1)-offset)*alpha)
-        make_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
-
-        make_sell_amount = round(((best_ask-1)-mean-offset)*alpha)
-        make_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
-
-        if make_buy_amount > 0:
-            orders.append(buy(product, best_bid+1, make_buy_amount))
-        elif make_sell_amount > 0:
-            orders.append(sell(product, best_ask-1, -make_sell_amount))
-
+        position = self._apply_binary_gate(
+            product, orders, position, limit, mean, threshold, bids, asks,
+        )
         return orders
 
     def _trade_velvetfruit(self, product: str, state: TradingState) -> List[Order]:
@@ -233,43 +203,13 @@ class Trader:
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
 
-        best_ask, best_ask_qty = asks[0] if asks else (None, None)
-        best_bid, best_bid_qty = bids[0] if bids else (None, None)
-
         limit = self.POSITION_LIMITS.get(product, 200)
         mean = PARAMS["velvetfruit_mean"]
-        alpha = PARAMS["velvetfruit_alpha"]
-        offset = PARAMS["velvetfruit_offset"]
+        threshold = PARAMS["velvetfruit_threshold"]
 
-        # ewma
-        if best_ask and best_bid:
-            mid = (best_ask + best_bid) / 2
-            PARAMS["velvetfruit_mean"] = (1 - PARAMS["ewma_gamma"]) * mid + (PARAMS["ewma_gamma"]) * mean
-
-        take_buy_amount = round((mean-best_ask-offset)*alpha)
-        take_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
-
-        take_sell_amount = round((best_bid-mean-offset)*alpha)
-        take_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
-
-        if take_buy_amount > 0:
-            orders.append(buy(product, best_ask, take_buy_amount))
-            position += take_buy_amount
-        elif take_sell_amount > 0:
-            orders.append(sell(product, best_bid, -take_sell_amount))
-            position -= take_sell_amount
-
-        make_buy_amount = round((mean-(best_bid+1)-offset)*alpha)
-        make_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
-
-        make_sell_amount = round(((best_ask-1)-mean-offset)*alpha)
-        make_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
-
-        if make_buy_amount > 0:
-            orders.append(buy(product, best_bid+1, make_buy_amount))
-        elif make_sell_amount > 0:
-            orders.append(sell(product, best_ask-1, -make_sell_amount))
-
+        position = self._apply_binary_gate(
+            product, orders, position, limit, mean, threshold, bids, asks,
+        )
         return orders
 
     def _trade_voucher(self, product: str, state: TradingState) -> List[Order]:
@@ -282,55 +222,90 @@ class Trader:
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
 
-        best_ask, best_ask_qty = asks[0] if asks else (None, None)
-        best_bid, best_bid_qty = bids[0] if bids else (None, None)
-
         limit = self.POSITION_LIMITS.get(product, 300)
-        base_mean = PARAMS[f"{product}_mean"]
-        alpha = PARAMS[f"{product}_alpha"]
-        offset = PARAMS[f"{product}_offset"]
-        slope = PARAMS[f"{product}_slope"]
+        threshold = PARAMS[f"{product}_threshold"]
 
-        # linear approximation: fair at global time t = base_mean + slope * (day*1e6 + ts)
-        # state.timestamp resets per day; PROSPERITY4BT_DAY (set by the backtester)
-        # gives the day index so the slope continues across day boundaries.
         day = 3
         effective_t = day * 1_000_000 + state.timestamp
-        mean = base_mean + slope * effective_t
 
-        # ewma writes back to the t=0 intercept
-        if best_ask and best_bid:
-            mid = (best_ask + best_bid) / 2
-            gamma = PARAMS["ewma_gamma"]
-            if int(product[4:8]) >= 5200:
-                gamma = PARAMS["ewma_gamma_opts"]
-            PARAMS[f"{product}_mean"] = (1 - gamma) * (mid - slope * effective_t) + gamma * base_mean
+        if product == "VEV_5200":
+            # power-law fair: a*(T - t)^b + c, T fixed at 8M
+            pl_a = PARAMS["VEV_5200_pl_a"]
+            pl_b = PARAMS["VEV_5200_pl_b"]
+            pl_c = PARAMS["VEV_5200_pl_c"]
+            pl_T = PARAMS["VEV_5200_pl_T"]
+            mean = pl_a * max(pl_T - effective_t, 1e-9) ** pl_b + pl_c
+            base_mean = mean
+            slope = 0.0
+            quad = 0.0
+        else:
+            # quadratic fair: base_mean + slope*t + quad*t^2 (quad=0 for non-curved vouchers)
+            base_mean = PARAMS[f"{product}_mean"]
+            slope = PARAMS[f"{product}_slope"]
+            quad = PARAMS[f"{product}_quad"]
+            mean = base_mean + slope * effective_t + quad * effective_t * effective_t
 
-        take_buy_amount = round((mean-best_ask-offset)*alpha)
-        take_buy_amount = min(limit - position, -best_ask_qty, take_buy_amount)
 
-        take_sell_amount = round((best_bid-mean-offset)*alpha)
-        take_sell_amount = min(limit + position, best_bid_qty, take_sell_amount)
-
-        if take_buy_amount > 0:
-            orders.append(buy(product, best_ask, take_buy_amount))
-            position += take_buy_amount
-        elif take_sell_amount > 0:
-            orders.append(sell(product, best_bid, -take_sell_amount))
-            position -= take_sell_amount
-
-        make_buy_amount = round((mean-(best_bid+1)-offset)*alpha)
-        make_buy_amount = min(limit - position, -best_ask_qty, make_buy_amount)
-
-        make_sell_amount = round(((best_ask-1)-mean-offset)*alpha)
-        make_sell_amount = min(limit + position, best_bid_qty, make_sell_amount)
-
-        if make_buy_amount > 0:
-            orders.append(buy(product, best_bid+1, make_buy_amount))
-        elif make_sell_amount > 0:
-            orders.append(sell(product, best_ask-1, -make_sell_amount))
-
+        position = self._apply_binary_gate(
+            product, orders, position, limit, mean, threshold, bids, asks,
+        )
         return orders
+
+    def _apply_binary_gate(
+        self,
+        product: str,
+        orders: List[Order],
+        position: int,
+        limit: int,
+        mean: float,
+        threshold: float,
+        bids: List[Tuple[int, int]],
+        asks: List[Tuple[int, int]],
+    ) -> int:
+        """Binary trade gate: take full size at every order-book level whose
+        price clears `mean ± threshold`, walking from the touch outward.
+        After taking, post a passive maker order at bid+1 / ask-1 for any
+        remaining capacity if that price still clears the threshold.
+        `bids` is sorted high-to-low; `asks` is sorted low-to-high (with
+        negative quantities, per OrderDepth convention).
+        """
+        # Take: walk asks (cheapest first) on the buy side, or bids on the sell side
+        if asks and asks[0][0] < mean - threshold:
+            for ask_price, ask_qty in asks:
+                if ask_price >= mean - threshold:
+                    break
+                capacity = limit - position
+                if capacity <= 0:
+                    break
+                qty = min(capacity, -ask_qty)
+                if qty > 0:
+                    orders.append(buy(product, ask_price, qty))
+                    position += qty
+        elif bids and bids[0][0] > mean + threshold:
+            for bid_price, bid_qty in bids:
+                if bid_price <= mean + threshold:
+                    break
+                capacity = limit + position
+                if capacity <= 0:
+                    break
+                qty = min(capacity, bid_qty)
+                if qty > 0:
+                    orders.append(sell(product, bid_price, -qty))
+                    position -= qty
+
+        # Make: post one level inside the touch if that price still clears the threshold
+        best_bid = bids[0][0] if bids else None
+        best_ask = asks[0][0] if asks else None
+        if best_bid is not None and (best_bid + 1) < mean - threshold:
+            qty = limit - position
+            if qty > 0:
+                orders.append(buy(product, best_bid + 1, qty))
+        elif best_ask is not None and (best_ask - 1) > mean + threshold:
+            qty = limit + position
+            if qty > 0:
+                orders.append(sell(product, best_ask - 1, -qty))
+
+        return position
 
     def _previous_bbo(self, product: str) -> Tuple[int | None, int | None]:
         if self.price_history.get(product):
