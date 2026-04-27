@@ -109,9 +109,6 @@ PARAMS = {
     "VEV_5500_a": 9.425942,    "VEV_5500_b": -1.893656e-06, "VEV_5500_c": 0.0,           "VEV_5500_threshold": OPT_MULT * 2.4770,
     "VEV_6000_a": 0.5,         "VEV_6000_b": 0.0,           "VEV_6000_c": 0.0,           "VEV_6000_threshold": OPT_MULT * 0.0,
     "VEV_6500_a": 0.5,         "VEV_6500_b": 0.0,           "VEV_6500_c": 0.0,           "VEV_6500_threshold": OPT_MULT * 0.0,
-
-    "ewma_gamma": 1,
-    "ewma_gamma_opts": 1,
 }
 
 
@@ -194,17 +191,9 @@ class Trader:
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
 
-        best_ask = asks[0][0] if asks else None
-        best_bid = bids[0][0] if bids else None
-
         limit = self.POSITION_LIMITS.get(product, 200)
         mean = PARAMS["hydrogel_mean"]
         threshold = PARAMS["hydrogel_threshold"]
-
-        # ewma
-        if best_ask is not None and best_bid is not None:
-            mid = (best_ask + best_bid) / 2
-            PARAMS["hydrogel_mean"] = (1 - PARAMS["ewma_gamma"]) * mid + PARAMS["ewma_gamma"] * mean
 
         self._apply_binary_gate(
             product, orders, position, limit, mean, threshold, bids, asks,
@@ -221,17 +210,9 @@ class Trader:
         asks = sorted(order_depth.sell_orders.items())
         bids = sorted(order_depth.buy_orders.items(), reverse=True)
 
-        best_ask = asks[0][0] if asks else None
-        best_bid = bids[0][0] if bids else None
-
         limit = self.POSITION_LIMITS.get(product, 200)
         mean = PARAMS["velvetfruit_mean"]
         threshold = PARAMS["velvetfruit_threshold"]
-
-        # ewma
-        if best_ask is not None and best_bid is not None:
-            mid = (best_ask + best_bid) / 2
-            PARAMS["velvetfruit_mean"] = (1 - PARAMS["ewma_gamma"]) * mid + PARAMS["ewma_gamma"] * mean
 
         self._apply_binary_gate(
             product, orders, position, limit, mean, threshold, bids, asks,
