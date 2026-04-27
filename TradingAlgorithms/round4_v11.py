@@ -85,11 +85,11 @@ OPT_MULT = 0.7     # all VEV vouchers
 # Left-shift the voucher poly2 fits by this many global ticks: substitute
 # (t + POLY2_T_SHIFT) for t in fair = a + b*t + c*t^2. Positive shifts
 # evaluate the fit at a *future* time; chosen via sweep on r3 d0-d3.
-POLY2_T_SHIFT = 120_000
+POLY2_T_SHIFT = 180_000
 
 PARAMS = {
     # threshold = mult * std(mid) for each asset class.
-    "hydrogel_mean": 9990,
+    "hydrogel_mean": 9993,
     "hydrogel_threshold": HYDRO_MULT * 32.5883,
 
     "velvetfruit_mean": 5250,
@@ -99,8 +99,8 @@ PARAMS = {
     # Non-ATM strikes (4000/4500/5000/5100/5400/5500) use linear fits at
     # gate=1 (c=0); ATM strikes (5200/5300) keep poly2 (with the
     # hand-tweaked c values). 6000/6500 are degenerate constants.
-    "VEV_4000_a": 1250.027654, "VEV_4000_b": -4.683553e-09, "VEV_4000_c": 0.0,           "VEV_4000_threshold": VELVET_MULT * 17.1139,
-    "VEV_4500_a": 750.001546,  "VEV_4500_b": 7.881227e-09,  "VEV_4500_c": 0.0,           "VEV_4500_threshold": VELVET_MULT * 17.1046,
+    "VEV_4000_a": 1250, "VEV_4000_b": 0, "VEV_4000_c": 0.0,           "VEV_4000_threshold": VELVET_MULT * 17.1139,
+    "VEV_4500_a": 750,  "VEV_4500_b": 0,  "VEV_4500_c": 0.0,           "VEV_4500_threshold": VELVET_MULT * 17.1046,
     "VEV_5000_a": 256.951192,  "VEV_5000_b": -1.441847e-06, "VEV_5000_c": 0.0,           "VEV_5000_threshold": OPT_MULT * 16.3813,
     "VEV_5100_a": 172.351050,  "VEV_5100_b": -3.826808e-06, "VEV_5100_c": 0.0,           "VEV_5100_threshold": OPT_MULT * 15.3267,
     "VEV_5200_a": 100.835494,  "VEV_5200_b": -2.450560e-06, "VEV_5200_c": -6.218958e-13, "VEV_5200_threshold": OPT_MULT * 12.7964,
@@ -305,7 +305,7 @@ class Trader:
         # Make: penny each side iff the penny price sits strictly on the
         # favorable side of the mean — buy at best_bid+1 when below mean,
         # sell at best_ask-1 when above. Independent checks so both can
-        # fire when the spread straddles the mean by >= 2 ticks.
+        # fire when the spread exceedsthe mean by > mm_edge.
         best_bid = bids[0][0] if bids else None
         best_ask = asks[0][0] if asks else None
         mm_edge = 0.33 * threshold
