@@ -80,7 +80,7 @@ def sell(product: str, price: int, quantity: int) -> Order:
 # threshold. Stds measured over data/backtest d0-d3.
 HYDRO_MULT = 0.8   # HYDROGEL_PACK
 VELVET_MULT = 1.0  # VELVETFRUIT_EXTRACT
-OPT_MULT = 0.8     # all VEV vouchers
+OPT_MULT = 0.7     # all VEV vouchers
 
 # Left-shift the voucher poly2 fits by this many global ticks: substitute
 # (t + POLY2_T_SHIFT) for t in fair = a + b*t + c*t^2. Positive shifts
@@ -97,16 +97,16 @@ PARAMS = {
 
     # voucher fair = a + b*t + c*t^2 ; t = day*1e6 + timestamp.
     # Quadratic fit on data/backtest d0-d3 ATM ticks
-    # (|VELVETFRUIT_EXTRACT - 5250| <= 2). See
+    # (|VELVETFRUIT_EXTRACT - 5250| <= 1). See
     # DataExploration/round4/fit_poly2_atm_all_strikes.py.
-    "VEV_4000_a": 1249.947730, "VEV_4000_b": 1.023505e-07,  "VEV_4000_c": -2.271724e-14, "VEV_4000_threshold": VELVET_MULT * 17.1139,
-    "VEV_4500_a": 749.883084,  "VEV_4500_b": 1.669623e-07,  "VEV_4500_c": -3.554971e-14, "VEV_4500_threshold": VELVET_MULT * 17.1046,
-    "VEV_5000_a": 257.136502,  "VEV_5000_b": -1.716896e-06, "VEV_5000_c": 7.141636e-14,  "VEV_5000_threshold": OPT_MULT * 16.3813,
-    "VEV_5100_a": 172.815023,  "VEV_5100_b": -4.500740e-06, "VEV_5100_c": 1.673965e-13,  "VEV_5100_threshold": OPT_MULT * 15.3267,
-    "VEV_5200_a": 100.853419,  "VEV_5200_b": -2.448752e-06, "VEV_5200_c": -6.548347e-13, "VEV_5200_threshold": OPT_MULT * 12.7964,
-    "VEV_5300_a": 50.983875,   "VEV_5300_b": -1.341060e-06, "VEV_5300_c": -8.592288e-13, "VEV_5300_threshold": OPT_MULT * 8.9759,
-    "VEV_5400_a": 20.697490,   "VEV_5400_b": -3.463250e-06, "VEV_5400_c": 8.849291e-14,  "VEV_5400_threshold": OPT_MULT * 4.6081,
-    "VEV_5500_a": 9.186829,    "VEV_5500_b": -1.533159e-06, "VEV_5500_c": -8.884571e-14, "VEV_5500_threshold": OPT_MULT * 2.4770,
+    "VEV_4000_a": 1250.130358, "VEV_4000_b": -1.550169e-07, "VEV_4000_c": 3.696308e-14,  "VEV_4000_threshold": VELVET_MULT * 17.1139,
+    "VEV_4500_a": 750.049440,  "VEV_4500_b": -6.222299e-08, "VEV_4500_c": 1.723681e-14,  "VEV_4500_threshold": VELVET_MULT * 17.1046,
+    "VEV_5000_a": 257.262152,  "VEV_5000_b": -1.897015e-06, "VEV_5000_c": 1.119142e-13,  "VEV_5000_threshold": OPT_MULT * 16.3813,
+    "VEV_5100_a": 172.895117,  "VEV_5100_b": -4.623187e-06, "VEV_5100_c": 1.958090e-13,  "VEV_5100_threshold": OPT_MULT * 15.3267,
+    "VEV_5200_a": 100.835494,  "VEV_5200_b": -2.450560e-06, "VEV_5200_c": -6.518959e-13, "VEV_5200_threshold": OPT_MULT * 12.7964,
+    "VEV_5300_a": 51.032929,   "VEV_5300_b": -1.385397e-06, "VEV_5300_c": -8.488619e-13, "VEV_5300_threshold": OPT_MULT * 8.9759,
+    "VEV_5400_a": 20.780619,   "VEV_5400_b": -3.562812e-06, "VEV_5400_c": 1.107900e-13,  "VEV_5400_threshold": OPT_MULT * 4.6081,
+    "VEV_5500_a": 9.169631,    "VEV_5500_b": -1.518481e-06, "VEV_5500_c": -9.224589e-14, "VEV_5500_threshold": OPT_MULT * 2.4770,
     "VEV_6000_a": 0.5,         "VEV_6000_b": 0.0,           "VEV_6000_c": 0.0,           "VEV_6000_threshold": OPT_MULT * 0.0,
     "VEV_6500_a": 0.5,         "VEV_6500_b": 0.0,           "VEV_6500_c": 0.0,           "VEV_6500_threshold": OPT_MULT * 0.0,
 
