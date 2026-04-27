@@ -29,6 +29,9 @@ KO_BARRIER = 35
 BP_PAYOUT = 10.0
 K_CO = 50
 
+# Every contract (spot + options) is 3000 units of AC. Applied at output only.
+CONTRACT_SIZE = 3000
+
 # Top-of-book bid/ask from the screenshot.
 # Long position pays the ask; short position receives the bid.
 # AC spot has no quote in the screenshot — defaults to S0; pass overrides if needed.
@@ -125,7 +128,7 @@ def simulate_portfolio_pnl(
     bid_prices: dict[str, float] | None = None,
     ask_prices: dict[str, float] | None = None,
     n_inner: int = 100,
-    n_outer: int = 10_000,
+    n_outer: int = 100_000,
     seed: int = 42,
     chunk: int = 500,
     plot_path: Path | str = PLOT_PATH,
@@ -173,6 +176,7 @@ def simulate_portfolio_pnl(
                 continue
             entry = ask[name] if qty > 0 else bid[name]
             pnl += qty * (po[name] - entry)
+        pnl *= CONTRACT_SIZE
 
         block = pnl.reshape(size, n_inner)
         batch_means[start:start + size] = block.mean(axis=1)
@@ -275,7 +279,9 @@ def plot_terminal_pnl(
             if qty == 0:
                 continue
             entry = ask[name] if qty > 0 else bid[name]
-            leg = qty * (_terminal_payoff_per_unit(name, S, ko_alive) - entry)
+            leg = CONTRACT_SIZE * qty * (
+                _terminal_payoff_per_unit(name, S, ko_alive) - entry
+            )
             ax.plot(S, leg, alpha=0.45, linewidth=1, label=f"{name} ({qty:+g})")
             total += leg
 
@@ -307,13 +313,32 @@ def plot_terminal_pnl(
 if __name__ == "__main__":
     # Example: long 100 cheap KO puts, short 10 chooser, long 5 spot
     example_positions = {
-        "AC_50_P":   0,
-        "AC_50_C":   0,
-        "AC_50_C_2": 50,
-        "AC_50_P_2": 50,
-        "AC_50_CO": -50,
-        # "AC_40_BP": -50,
-        #"AC_45_P": 50,
+        "AC":        0,
+        "AC_45_P":   50,
+        "AC_40_P":   0,
+        "AC_35_P":   -48,
+        "AC_50_P":   0 + 10,
+        "AC_50_C":   23,
+        "AC_50_C_2": 0,
+        # "AC_60_C":   0,
+        "AC_50_P_2": 23 - 10,
+        "AC_50_CO":  -23,
+        "AC_40_BP": -50,
+        "AC_45_KO": 143,
     }
+    # example_positions = {
+    #     "AC":        0,
+    #     "AC_45_P":   0,
+    #     "AC_40_P":   0,
+    #     "AC_35_P":   0,
+    #     "AC_50_P":   -50,
+    #     "AC_50_C":   -50,
+    #     "AC_50_C_2": 50,
+    #     # "AC_60_C":   0,
+    #     "AC_50_P_2": 50,
+    #     "AC_50_CO":  -50,
+    #     "AC_40_BP": -50,
+    #     "AC_45_KO": 0,
+    # }
     simulate_portfolio_pnl(example_positions)
     plot_terminal_pnl(example_positions)
