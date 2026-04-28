@@ -70,7 +70,7 @@ logger = Logger()
 PARAMS = {
     "PENNY_AMOUNT" : 3,
     "MIN_SPREAD_THRESHOLD" : 7,
-    "ROBOT_MASSIVE_SPIKE_THRESH" : 90,
+    "MASSIVE_SPIKE_THRESH" : 90,
 }
 
 
@@ -97,17 +97,22 @@ TRADED_PRODUCTS: List[str] = [
     # "MICROCHIP_SQUARE",
     # "MICROCHIP_OVAL",
     # "MICROCHIP_TRIANGLE",
-    "ROBOT_DISHES"
+    "ROBOT_DISHES",
+    "OXYGEN_SHAKE_EVENING_BREATH",
+    "OXYGEN_SHAKE_CHOCOLATE"
 ]
 
 class Trader:
 
     def __init__(self):
-        self.strategies = {"ROBOT_DISHES" : self._trade_robot_dishes}
+        self.strategies = {
+            "ROBOT_DISHES" : self._trade_massive_spike_product,
+            "OXYGEN_SHAKE_EVENING_BREATH" : self._trade_massive_spike_product,
+            "OXYGEN_SHAKE_CHOCOLATE" : self._trade_massive_spike_product,
+        }
         self.POSITION_LIMITS = POSITION_LIMITS
         self.TRADED_PRODUCTS = TRADED_PRODUCTS
-        self.prev_robot_dish_price = None
-        self.prev_robot_massive_spike_direction = None
+        self.massive_spike_mid_history = {}
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
@@ -147,7 +152,7 @@ class Trader:
                 ))
         return res
 
-    def _trade_robot_dishes(self, product, state, orders):
+    def _trade_massive_spike_product(self, product, state, orders):
         orderbook = state.order_depths[product]
         buy_orders = orderbook.buy_orders
         sell_orders = orderbook.sell_orders
@@ -155,14 +160,14 @@ class Trader:
         best_ask = min(sell_orders.keys()) if sell_orders else None
         pos = state.position.get(product, 0)
         res = []
-        prev_mid = self.prev_robot_dish_price
+        prev_mid = self.massive_spike_mid_history.get(product, None)
         mid = (best_bid + best_ask)/2
         if prev_mid is not None:
-            if mid - prev_mid >= PARAMS["ROBOT_MASSIVE_SPIKE_THRESH"]:
+            if mid - prev_mid >= PARAMS["MASSIVE_SPIKE_THRESH"]:
                 res.extend(self.get_target_position(product, buy_orders, sell_orders, pos, -10))
-            elif prev_mid - mid >= PARAMS["ROBOT_MASSIVE_SPIKE_THRESH"]:
+            elif prev_mid - mid >= PARAMS["MASSIVE_SPIKE_THRESH"]:
                 res.extend(self.get_target_position(product, buy_orders, sell_orders, pos, 10))     
-        self.prev_robot_dish_price = mid
+        self.massive_spike_mid_history[product] = mid
         return res
     
     def get_target_position(self, product, buy_orders, sell_orders, pos, target_pos):
