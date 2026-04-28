@@ -99,7 +99,8 @@ TRADED_PRODUCTS: List[str] = [
     # "MICROCHIP_TRIANGLE",
     "ROBOT_DISHES",
     "OXYGEN_SHAKE_EVENING_BREATH",
-    "OXYGEN_SHAKE_CHOCOLATE"
+    "OXYGEN_SHAKE_CHOCOLATE",
+    "ROBOT_IRONING"
 ]
 
 class Trader:
@@ -107,8 +108,9 @@ class Trader:
     def __init__(self):
         self.strategies = {
             "ROBOT_DISHES" : self._trade_massive_spike_product,
+            "ROBOT_IRONING" : self._trade_massive_spike_product,
             "OXYGEN_SHAKE_EVENING_BREATH" : self._trade_massive_spike_product,
-            "OXYGEN_SHAKE_CHOCOLATE" : self._trade_massive_spike_product,
+            "OXYGEN_SHAKE_CHOCOLATE" : self._trade_massive_spike_product, 
         }
         self.POSITION_LIMITS = POSITION_LIMITS
         self.TRADED_PRODUCTS = TRADED_PRODUCTS
@@ -122,14 +124,14 @@ class Trader:
             if product not in state.order_depths:
                 continue
             strategy = self.strategies.get(product, self._trade_default)
-            result[product] = strategy(product, state, result)
+            result[product] = strategy(product, state)
 
         conversions = 0
         trader_data = json.dumps({})
         logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
 
-    def _trade_default(self, product: str, state: TradingState, orders) -> List[Order]:
+    def _trade_default(self, product: str, state: TradingState) -> List[Order]:
         orderbook = state.order_depths[product]
         buy_orders = orderbook.buy_orders
         sell_orders = orderbook.sell_orders
@@ -152,7 +154,7 @@ class Trader:
                 ))
         return res
 
-    def _trade_massive_spike_product(self, product, state, orders):
+    def _trade_massive_spike_product(self, product, state):
         orderbook = state.order_depths[product]
         buy_orders = orderbook.buy_orders
         sell_orders = orderbook.sell_orders
