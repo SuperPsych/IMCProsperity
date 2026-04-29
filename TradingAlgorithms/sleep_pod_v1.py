@@ -83,20 +83,20 @@ DEFAULT_LIMIT = 10
 SLEEP_POD_MIN_SPREAD = 6
 SLEEP_POD_FADE_TICKS = 3
 SLEEP_POD_TARGET_POS = 4   # default static long bias for trenders
-DEFAULT_FADE_TICKS = 0
-DEFAULT_TARGET_POS = 0
+
+SLEEP_PODS = {
+    "SLEEP_POD_COTTON",
+    "SLEEP_POD_NYLON",
+    "SLEEP_POD_POLYESTER",
+    "SLEEP_POD_SUEDE",
+    # LAMB_WOOL excluded — basket allocation too small, bleeds at any bias.
+}
 
 # Per-pod momentum size: only applied when non-zero. Replaces the static
 # long bias for that pod with target = ±SIZE based on intraday drift.
 SLEEP_POD_MOMENTUM = {
     "SLEEP_POD_NYLON": 10,
 }
-
-
-def product_type(product: str) -> str:
-    if product.startswith("SLEEP_POD_"):
-        return "SLEEP_POD"
-    return "DEFAULT"
 
 
 def penny(
@@ -152,8 +152,9 @@ class Trader:
         result: Dict[str, List[Order]] = {}
 
         for product, depth in state.order_depths.items():
+            if product not in SLEEP_PODS:
+                continue
             position = state.position.get(product, 0)
-            ptype = product_type(product)
 
             mid: float | None = None
             if depth.buy_orders and depth.sell_orders:
@@ -161,22 +162,19 @@ class Trader:
                 if product not in self.day_open:
                     self.day_open[product] = mid
 
-            if ptype == "SLEEP_POD":
-                mom_size = SLEEP_POD_MOMENTUM.get(product, 0)
-                if mom_size > 0:
-                    target = 0
-                    open_px = self.day_open.get(product)
-                    if mid is not None and open_px is not None:
-                        if mid > open_px:
-                            target = mom_size
-                        elif mid < open_px:
-                            target = -mom_size
-                else:
-                    target = SLEEP_POD_TARGET_POS
-                orders = penny(product, depth, position, DEFAULT_LIMIT, SLEEP_POD_MIN_SPREAD, SLEEP_POD_FADE_TICKS, target)
+            mom_size = SLEEP_POD_MOMENTUM.get(product, 0)
+            if mom_size > 0:
+                target = 0
+                open_px = self.day_open.get(product)
+                if mid is not None and open_px is not None:
+                    if mid > open_px:
+                        target = mom_size
+                    elif mid < open_px:
+                        target = -mom_size
             else:
-                orders = penny(product, depth, position, DEFAULT_LIMIT, 2, DEFAULT_FADE_TICKS, DEFAULT_TARGET_POS)
+                target = SLEEP_POD_TARGET_POS
 
+            orders = penny(product, depth, position, DEFAULT_LIMIT, SLEEP_POD_MIN_SPREAD, SLEEP_POD_FADE_TICKS, target)
             if orders:
                 result[product] = orders
 
