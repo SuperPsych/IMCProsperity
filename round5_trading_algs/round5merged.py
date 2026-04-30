@@ -140,7 +140,68 @@ def sleep_pod_penny(
 
 
 # ---------------------------------------------------------------------------
-# Galaxy sounds: penny vs wall-mid with linear position fade
+# Liquid oxygen shakes: penny with asymmetric fade toward target
+# ---------------------------------------------------------------------------
+
+OXYGEN_LIMIT = 10
+OXYGEN_MIN_SPREAD = 8
+OXYGEN_FADE_TICKS = 2
+
+OXYGEN_PRODUCTS = {
+    "OXYGEN_SHAKE_CHOCOLATE",
+    "OXYGEN_SHAKE_EVENING_BREATH",
+    "OXYGEN_SHAKE_GARLIC",
+    "OXYGEN_SHAKE_MORNING_BREATH",
+}
+
+# Per-product target inventory. Asymmetric fade only encourages moving
+# toward target, never past it.
+OXYGEN_TARGET_POS: Dict[str, int] = {
+    "OXYGEN_SHAKE_GARLIC": 10,
+}
+
+
+def oxygen_penny(
+    product: str,
+    depth: OrderDepth,
+    position: int,
+    limit: int,
+    min_spread: int,
+    fade_ticks: int = 0,
+    target_pos: int = 0,
+) -> List[Order]:
+    bids = sorted(depth.buy_orders.items(), reverse=True)
+    asks = sorted(depth.sell_orders.items())
+    if not bids or not asks:
+        return []
+
+    best_bid = bids[0][0]
+    best_ask = asks[0][0]
+    if best_ask - best_bid < min_spread:
+        return []
+
+    # Asymmetric fade: only fade when away from target, not past it.
+    delta = position - target_pos
+    if target_pos > 0:
+        delta = min(0, delta)
+    elif target_pos < 0:
+        delta = max(0, delta)
+    shift = round(fade_ticks * delta / limit) if limit > 0 else 0
+    buy_price = best_bid + 1 - shift
+    sell_price = best_ask - 1 - shift
+
+    orders: List[Order] = []
+    buy_capacity = limit - position
+    sell_capacity = limit + position
+    if buy_capacity > 0:
+        orders.append(buy(product, buy_price, buy_capacity))
+    if sell_capacity > 0:
+        orders.append(sell(product, sell_price, sell_capacity))
+    return orders
+
+
+# ---------------------------------------------------------------------------
+# Galaxy sounds: penny vs wall-mid with linear position fade (% edge)
 # ---------------------------------------------------------------------------
 
 GALAXY_PRODUCTS = [
@@ -154,8 +215,8 @@ GALAXY_PRODUCTS = [
 GALAXY_LIMIT: Dict[str, int] = {p: 10 for p in GALAXY_PRODUCTS}
 
 GALAXY_PARAMS = {
-    "spread_thresh": 6,  # min ticks of edge each penny quote needs vs the wall-mid fair
-    "fade": 0.2,         # fair -= fade * position
+    "edge_pct": 0.06,    # min % edge each penny quote needs vs wall-mid fair
+    "fade": 0.1,         # fair -= fade * position
 }
 
 
@@ -250,37 +311,42 @@ def pair_trade(state: TradingState, asset_a: str, asset_b: str, beta: float,
 
 
 # ---------------------------------------------------------------------------
-# Pebbles: penny with drift bias and inventory skew
+# Pebbles: pennying (XL/M/S/L) + market-trade copying (XS)
 # ---------------------------------------------------------------------------
 
 PEBBLES_PARAMS: Dict[str, Dict[str, float]] = {
     "PEBBLES_XL": {
-        "edge_pct": 0.04,
+        "edge_pct": 0.06,
+        "inventory_skew": 0.5,
+        "drift_bias": 0,
+        "target_position": 0,
+    },
+    "PEBBLES_M": {
+        "edge_pct": 0.06,
         "inventory_skew": 0.2,
-        "drift_bias": 3,
+        "drift_bias": 0,
         "target_position": 0,
     },
     "PEBBLES_XS": {
-        "edge_pct": 0.04,
-        "inventory_skew": 0.1,
-        "drift_bias": -3,
-        "target_position": 0,
+        "frontrun_ratio": 0.5,   # fraction of observed market trade qty to copy
     },
     "PEBBLES_S": {
         "edge_pct": 0.06,
-        "inventory_skew": 0.05,
-        "drift_bias": -1.5,
+        "inventory_skew": 0.2,
+        "drift_bias": 0,
         "target_position": 0,
     },
     "PEBBLES_L": {
         "edge_pct": 0.06,
-        "inventory_skew": 0.05,
-        "drift_bias": 1.5,
+        "inventory_skew": 0.2,
+        "drift_bias": 0,
         "target_position": 0,
     },
 }
 
-PEBBLES_PRODUCTS = list(PEBBLES_PARAMS.keys())
+PEBBLES_PENNYING = ["PEBBLES_XL", "PEBBLES_M", "PEBBLES_S", "PEBBLES_L"]
+PEBBLES_COPYING = ["PEBBLES_XS"]
+PEBBLES_PRODUCTS = PEBBLES_PENNYING + PEBBLES_COPYING
 PEBBLES_LIMIT: Dict[str, int] = {p: 10 for p in PEBBLES_PRODUCTS}
 
 
@@ -330,6 +396,27 @@ def _take_to_target(product: str, buy_orders, sell_orders, pos: int, target: int
 
 
 # ---------------------------------------------------------------------------
+# Snackpacks: simple market making with unwind on tight spread
+# ---------------------------------------------------------------------------
+
+SNACKPACK_PRODUCTS = [
+    "SNACKPACK_CHOCOLATE",
+    "SNACKPACK_VANILLA",
+    "SNACKPACK_PISTACHIO",
+    "SNACKPACK_RASPBERRY",
+    "SNACKPACK_STRAWBERRY",
+]
+
+SNACKPACK_LIMIT: Dict[str, int] = {p: 10 for p in SNACKPACK_PRODUCTS}
+
+SNACKPACK_PARAMS = {
+    "quote_size": 10,
+    "min_spread": 6,
+    "unwind_size": 2,
+}
+
+
+# ---------------------------------------------------------------------------
 # Combined trader
 # ---------------------------------------------------------------------------
 
@@ -351,10 +438,12 @@ class Trader:
         self.last_ts = state.timestamp
 
         self._trade_sleep_pods(state, result)
+        self._trade_oxygen(state, result)
         self._trade_galaxy(state, result)
         self._trade_microchips(state, result)
         self._trade_pebbles(state, result)
         self._trade_robot_dishes(state, result)
+        self._trade_snackpacks(state, result)
 
         logger.flush(state, result, 0, "")
         return result, 0, ""
@@ -390,10 +479,25 @@ class Trader:
             if orders:
                 result[product] = orders
 
+    # -- liquid oxygen -----------------------------------------------------
+
+    def _trade_oxygen(self, state: TradingState, result: Dict[str, List[Order]]) -> None:
+        for product, depth in state.order_depths.items():
+            if product not in OXYGEN_PRODUCTS:
+                continue
+            position = state.position.get(product, 0)
+            target = OXYGEN_TARGET_POS.get(product, 0)
+            orders = oxygen_penny(
+                product, depth, position,
+                OXYGEN_LIMIT, OXYGEN_MIN_SPREAD, OXYGEN_FADE_TICKS, target,
+            )
+            if orders:
+                result[product] = orders
+
     # -- galaxy sounds -----------------------------------------------------
 
     def _trade_galaxy(self, state: TradingState, result: Dict[str, List[Order]]) -> None:
-        spread_thresh = GALAXY_PARAMS["spread_thresh"]
+        edge_pct = GALAXY_PARAMS["edge_pct"]
         fade = GALAXY_PARAMS["fade"]
 
         for product in GALAXY_PRODUCTS:
@@ -420,12 +524,12 @@ class Trader:
             fair -= fade * position
 
             if (best_bid is not None
-                    and (fair - (best_bid + 1)) >= spread_thresh
+                    and (fair - (best_bid + 1)) / fair * 100 >= edge_pct
                     and position < limit):
                 orders.append(buy(product, best_bid + 1, limit - position))
 
             if (best_ask is not None
-                    and ((best_ask - 1) - fair) >= spread_thresh
+                    and ((best_ask - 1) - fair) / fair * 100 >= edge_pct
                     and position > -limit):
                 orders.append(sell(product, best_ask - 1, limit + position))
 
@@ -440,46 +544,84 @@ class Trader:
     # -- pebbles -----------------------------------------------------------
 
     def _trade_pebbles(self, state: TradingState, result: Dict[str, List[Order]]) -> None:
-        for product in PEBBLES_PRODUCTS:
-            p = PEBBLES_PARAMS[product]
-            edge_pct = p["edge_pct"]
-            inventory_skew = p["inventory_skew"]
-            drift_bias = p["drift_bias"]
-            target_position = p["target_position"]
+        for product in PEBBLES_PENNYING:
+            result[product] = self._pebbles_pennying(product, state)
+        for product in PEBBLES_COPYING:
+            result[product] = self._pebbles_copying(product, state)
 
-            orders: List[Order] = []
-            depth = state.order_depths.get(product)
-            if depth is None:
-                result[product] = orders
-                continue
+    def _pebbles_pennying(self, product: str, state: TradingState) -> List[Order]:
+        p = PEBBLES_PARAMS[product]
+        edge_pct = p["edge_pct"]
+        inventory_skew = p["inventory_skew"]
+        drift_bias = p["drift_bias"]
+        target_position = p["target_position"]
 
-            asks = sorted(depth.sell_orders.items())
-            bids = sorted(depth.buy_orders.items(), reverse=True)
-            best_ask, _ = asks[0] if asks else (None, None)
-            best_bid, _ = bids[0] if bids else (None, None)
-            ask_2, _ = asks[1] if len(asks) > 1 else (None, None)
-            bid_2, _ = bids[1] if len(bids) > 1 else (None, None)
+        orders: List[Order] = []
+        depth = state.order_depths.get(product)
+        if depth is None:
+            return orders
 
-            if bid_2 is None or ask_2 is None:
-                result[product] = orders
-                continue
-            mid = (bid_2 + ask_2) / 2
+        asks = sorted(depth.sell_orders.items())
+        bids = sorted(depth.buy_orders.items(), reverse=True)
+        best_ask, _ = asks[0] if asks else (None, None)
+        best_bid, _ = bids[0] if bids else (None, None)
+        ask_2, _ = asks[1] if len(asks) > 1 else (None, None)
+        bid_2, _ = bids[1] if len(bids) > 1 else (None, None)
 
-            limit = PEBBLES_LIMIT[product]
-            position = state.position.get(product, 0)
-            fair = mid + drift_bias - inventory_skew * (position - target_position)
+        if bid_2 is None or ask_2 is None:
+            return orders
+        mid = (bid_2 + ask_2) / 2
 
-            if (best_bid is not None
-                    and (fair - (best_bid + 1)) / fair * 100 >= edge_pct
-                    and position < limit):
-                orders.append(buy(product, best_bid + 1, limit - position))
+        limit = PEBBLES_LIMIT[product]
+        position = state.position.get(product, 0)
+        fair = mid + drift_bias - inventory_skew * (position - target_position)
 
-            if (best_ask is not None
-                    and ((best_ask - 1) - fair) / fair * 100 >= edge_pct
-                    and position > -limit):
-                orders.append(sell(product, best_ask - 1, limit + position))
+        if (best_bid is not None
+                and (fair - (best_bid + 1)) / fair * 100 >= edge_pct
+                and position < limit):
+            orders.append(buy(product, best_bid + 1, limit - position))
 
-            result[product] = orders
+        if (best_ask is not None
+                and ((best_ask - 1) - fair) / fair * 100 >= edge_pct
+                and position > -limit):
+            orders.append(sell(product, best_ask - 1, limit + position))
+
+        return orders
+
+    def _pebbles_copying(self, product: str, state: TradingState) -> List[Order]:
+        orders: List[Order] = []
+        depth = state.order_depths.get(product)
+        if depth is None:
+            return orders
+
+        frontrun_ratio = PEBBLES_PARAMS[product]["frontrun_ratio"]
+        limit = PEBBLES_LIMIT[product]
+
+        best_bid = max(depth.buy_orders.keys()) if depth.buy_orders else None
+        best_ask = min(depth.sell_orders.keys()) if depth.sell_orders else None
+        if best_bid is None or best_ask is None:
+            return orders
+
+        position = state.position.get(product, 0)
+        buy_capacity = limit - position
+        sell_capacity = limit + position
+
+        market_trades = state.market_trades.get(product, [])
+        if not market_trades:
+            return orders
+
+        order = market_trades[0]
+        qty = int(abs(order.quantity) * frontrun_ratio)
+        if order.quantity < 0:
+            qty = min(qty, buy_capacity)
+            if qty > 0:
+                orders.append(buy(product, best_bid + 1, qty))
+        else:
+            qty = min(qty, sell_capacity)
+            if qty > 0:
+                orders.append(sell(product, best_ask - 1, qty))
+
+        return orders
 
     # -- robot dishes ------------------------------------------------------
 
@@ -511,3 +653,42 @@ class Trader:
 
         if orders:
             result[product] = orders
+
+    # -- snackpacks --------------------------------------------------------
+
+    def _trade_snackpacks(self, state: TradingState, result: Dict[str, List[Order]]) -> None:
+        quote_size = SNACKPACK_PARAMS["quote_size"]
+        min_spread = SNACKPACK_PARAMS["min_spread"]
+        unwind_size = SNACKPACK_PARAMS["unwind_size"]
+
+        for product in SNACKPACK_PRODUCTS:
+            depth = state.order_depths.get(product)
+            if depth is None or not depth.buy_orders or not depth.sell_orders:
+                continue
+
+            best_bid = max(depth.buy_orders)
+            best_ask = min(depth.sell_orders)
+            spread = best_ask - best_bid
+            position = state.position.get(product, 0)
+            limit = SNACKPACK_LIMIT[product]
+
+            orders: List[Order] = []
+            if spread >= min_spread:
+                buy_room = max(0, limit - position)
+                sell_room = max(0, limit + position)
+                bid_size = min(quote_size, buy_room)
+                ask_size = min(quote_size, sell_room)
+                if bid_size > 0:
+                    orders.append(buy(product, best_bid + 1, bid_size))
+                if ask_size > 0:
+                    orders.append(sell(product, best_ask - 1, ask_size))
+            else:
+                if position > 0:
+                    unwind = min(unwind_size, position)
+                    orders.append(sell(product, best_bid, unwind))
+                elif position < 0:
+                    unwind = min(unwind_size, -position)
+                    orders.append(buy(product, best_ask, unwind))
+
+            if orders:
+                result[product] = orders
