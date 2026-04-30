@@ -77,27 +77,55 @@ def sell(product: str, price: int, quantity: int) -> Order:
 
 
 class Trader:
-    PEBBLES_PRODUCTS = [
-        "PEBBLES_XL",
-    ]
+    # per-product parameter sets
+    PARAMS: Dict[str, Dict[str, float]] = {
+        "PEBBLES_XL": {
+            "edge_pct": 0.06,        # min % edge each penny quote needs vs the fair
+            "inventory_skew": 0.2,   # fair -= inventory_skew * (position - target_position)
+            "drift_bias": 0,         # constant added to wall-mid fair to bias the book long
+            "target_position": 0,    # inventory level the skew pulls fair toward
+        },
+        "PEBBLES_M": {
+            "edge_pct": 0.06,        # ≈ galaxy's spread_thresh=6 at ~10000 mid
+            "inventory_skew": 0,   # galaxy's fade
+            "drift_bias": 0,
+            "target_position": 0,
+        },
+        # "PEBBLES_XS": {
+        #     "edge_pct": 0.04,
+        #     "inventory_skew": 0.1,
+        #     "drift_bias": -3,        # bias book short since this is the most liquid product
+        #     "target_position": 0,
+        # },
+        "PEBBLES_S": {
+            "edge_pct": 0.06,
+            "inventory_skew": 0,
+            "drift_bias": 0,        # bias book short since this is the most liquid product
+            "target_position": 0,
+        },
+        "PEBBLES_L": {
+            "edge_pct": 0.06,
+            "inventory_skew": 0,
+            "drift_bias": 0,        # bias book short since this is the most liquid product
+            "target_position": 0,
+        },
+    }
+
+    PEBBLES_PRODUCTS = list(PARAMS.keys())
 
     POSITION_LIMIT: Dict[str, int] = {p: 10 for p in PEBBLES_PRODUCTS}
-
-    PARAMS = {
-        "edge_pct": 0.05,    # min % edge each penny quote needs vs the wall-mid fair (e.g. 0.06 == 0.06%)
-        "fade": 0.2,         # fair -= fade * position
-        "fair_bias": 3,      # constant added to wall-mid fair to bias the book long
-    }
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
         logger.print("positions:", state.position)
 
-        edge_pct = self.PARAMS["edge_pct"]
-        fade = self.PARAMS["fade"]
-        fair_bias = self.PARAMS["fair_bias"]
-
         for product in self.PEBBLES_PRODUCTS:
+            p = self.PARAMS[product]
+            edge_pct = p["edge_pct"]
+            inventory_skew = p["inventory_skew"]
+            drift_bias = p["drift_bias"]
+            target_position = p["target_position"]
+
             orders: List[Order] = []
             depth = state.order_depths.get(product)
             if depth is None:
@@ -115,13 +143,12 @@ class Trader:
             if bid_2 is None or ask_2 is None:
                 result[product] = orders
                 continue
-            fair = (bid_2 + ask_2) / 2 + fair_bias
+            mid = (bid_2 + ask_2) / 2
 
             limit = self.POSITION_LIMIT[product]
             position = state.position.get(product, 0)
 
-            # fade fair by position so we're more willing to sell when long, buy when short
-            fair -= fade * position
+            fair = mid + drift_bias - inventory_skew * (position - target_position)
 
             # penny each side independently if quote is at least edge_pct from fair
             if (best_bid is not None
