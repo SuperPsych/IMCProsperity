@@ -1,4 +1,4 @@
-from datamodel import Order, OrderDepth, TradingState
+from datamodel import Order, TradingState
 from typing import Any, Dict, List
 import json
 
@@ -77,69 +77,70 @@ def sell(product: str, price: int, quantity: int) -> Order:
 
 
 class Trader:
-    GALAXY_PRODUCTS = [
-        "GALAXY_SOUNDS_DARK_MATTER",
-        "GALAXY_SOUNDS_BLACK_HOLES",
-        "GALAXY_SOUNDS_PLANETARY_RINGS",
-        "GALAXY_SOUNDS_SOLAR_WINDS",
-        "GALAXY_SOUNDS_SOLAR_FLAMES",
+    SNACKPACK_PRODUCTS = [
+        # "SNACKPACK_CHOCOLATE",
+        # "SNACKPACK_VANILLA",
+        "SNACKPACK_PISTACHIO",
+        # "SNACKPACK_RASPBERRY",
+        # "SNACKPACK_STRAWBERRY",
     ]
 
-    POSITION_LIMIT: Dict[str, int] = {p: 10 for p in GALAXY_PRODUCTS}
+    POSITION_LIMIT: Dict[str, int] = {p: 10 for p in SNACKPACK_PRODUCTS}
 
     PARAMS = {
-        "edge_pct": 0.06,    # min % edge each penny quote needs vs the wall-mid fair (≈ spread_thresh=6 at ~10000 mid)
-        "fade": 0.1,         # fair -= fade * position; positive position lowers fair, 0.1 is theoretically better on backtest but higher variance
+        "quote_size": 10,
+        "min_spread": 6,
     }
 
     def run(self, state: TradingState):
-        result: Dict[str, List[Order]] = {}
+        result: Dict[str, List[Order]] = {p: [] for p in self.SNACKPACK_PRODUCTS}
         logger.print("positions:", state.position)
 
-        edge_pct = self.PARAMS["edge_pct"]
-        fade = self.PARAMS["fade"]
-
-        for product in self.GALAXY_PRODUCTS:
-            orders: List[Order] = []
-            depth = state.order_depths.get(product)
-            if depth is None:
-                result[product] = orders
-                continue
-
-            asks = sorted(depth.sell_orders.items())
-            bids = sorted(depth.buy_orders.items(), reverse=True)
-            best_ask, _ = asks[0] if asks else (None, None)
-            best_bid, _ = bids[0] if bids else (None, None)
-            ask_2, _ = asks[1] if len(asks) > 1 else (None, None)
-            bid_2, _ = bids[1] if len(bids) > 1 else (None, None)
-
-            # wall mid: average of level-2 quotes
-            if bid_2 is not None and ask_2 is not None:
-                fair = (bid_2 + ask_2) / 2
-            else:
-                result[product] = orders
-                continue
-
-            limit = self.POSITION_LIMIT[product]
-            position = state.position.get(product, 0)
-
-            # fade fair by position so we're more willing to sell when long, buy when short
-            fair -= fade * position
-
-            # penny each side independently if quote is at least edge_pct from fair
-            if (best_bid is not None
-                    and (fair - (best_bid + 1)) / fair * 100 >= edge_pct
-                    and position < limit):
-                orders.append(buy(product, best_bid + 1, limit - position))
-
-            if (best_ask is not None
-                    and ((best_ask - 1) - fair) / fair * 100 >= edge_pct
-                    and position > -limit):
-                orders.append(sell(product, best_ask - 1, limit + position))
-
-            result[product] = orders
+        for product in self.SNACKPACK_PRODUCTS:
+            result[product] = self.market_make_product(state, product)
 
         conversions = 0
         trader_data = ""
         logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
+
+    def market_make_product(self, state: TradingState, product: str) -> List[Order]:
+        depth = state.order_depths.get(product)
+        if depth is None or not depth.buy_orders or not depth.sell_orders:
+            return []
+
+        best_bid = max(depth.buy_orders)
+        best_ask = min(depth.sell_orders)
+        spread = best_ask - best_bid
+        position = state.position.get(product, 0)
+        limit = self.POSITION_LIMIT[product]
+
+        quote_size = self.PARAMS["quote_size"]
+        min_spread = self.PARAMS["min_spread"]
+
+        orders: List[Order] = []
+
+        if spread >= min_spread:
+            bid_price = best_bid + 1
+            ask_price = best_ask - 1
+
+            buy_room = max(0, limit - position)
+            sell_room = max(0, limit + position)
+
+            bid_size = min(quote_size, buy_room)
+            ask_size = min(quote_size, sell_room)
+
+            if bid_size > 0:
+                orders.append(buy(product, bid_price, bid_size))
+            if ask_size > 0:
+                orders.append(sell(product, ask_price, ask_size))
+
+        logger.print(
+            product,
+            "bid=", best_bid,
+            "ask=", best_ask,
+            "spread=", spread,
+            "position=", position,
+            "orders=", [(order.price, order.quantity) for order in orders],
+        )
+        return orders

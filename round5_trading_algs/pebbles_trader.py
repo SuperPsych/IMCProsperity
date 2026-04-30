@@ -81,37 +81,36 @@ class Trader:
     PARAMS: Dict[str, Dict[str, float]] = {
         "PEBBLES_XL": {
             "edge_pct": 0.06,        # min % edge each penny quote needs vs the fair
-            "inventory_skew": 0.2,   # fair -= inventory_skew * (position - target_position)
+            "inventory_skew": 0.5,   # fair -= inventory_skew * (position - target_position)
             "drift_bias": 0,         # constant added to wall-mid fair to bias the book long
             "target_position": 0,    # inventory level the skew pulls fair toward
         },
         "PEBBLES_M": {
             "edge_pct": 0.06,        # ≈ galaxy's spread_thresh=6 at ~10000 mid
-            "inventory_skew": 0,   # galaxy's fade
+            "inventory_skew": 0.2,   # galaxy's fade
             "drift_bias": 0,
             "target_position": 0,
         },
-        # "PEBBLES_XS": {
-        #     "edge_pct": 0.04,
-        #     "inventory_skew": 0.1,
-        #     "drift_bias": -3,        # bias book short since this is the most liquid product
-        #     "target_position": 0,
-        # },
+        "PEBBLES_XS": {
+            "frontrun_ratio": 0.5,   # fraction of observed market trade qty to copy
+        },
         "PEBBLES_S": {
             "edge_pct": 0.06,
-            "inventory_skew": 0,
+            "inventory_skew": 0.2,
             "drift_bias": 0,        # bias book short since this is the most liquid product
             "target_position": 0,
         },
         "PEBBLES_L": {
             "edge_pct": 0.06,
-            "inventory_skew": 0,
+            "inventory_skew": 0.2,
             "drift_bias": 0,        # bias book short since this is the most liquid product
             "target_position": 0,
         },
     }
 
-    PEBBLES_PRODUCTS = list(PARAMS.keys())
+    PENNYING_PRODUCTS = ["PEBBLES_XL", "PEBBLES_M", "PEBBLES_S", "PEBBLES_L"]
+    COPYING_PRODUCTS = ["PEBBLES_XS"]
+    PEBBLES_PRODUCTS = PENNYING_PRODUCTS + COPYING_PRODUCTS
 
     POSITION_LIMIT: Dict[str, int] = {p: 10 for p in PEBBLES_PRODUCTS}
 
@@ -119,51 +118,90 @@ class Trader:
         result: Dict[str, List[Order]] = {}
         logger.print("positions:", state.position)
 
-        for product in self.PEBBLES_PRODUCTS:
-            p = self.PARAMS[product]
-            edge_pct = p["edge_pct"]
-            inventory_skew = p["inventory_skew"]
-            drift_bias = p["drift_bias"]
-            target_position = p["target_position"]
+        for product in self.PENNYING_PRODUCTS:
+            result[product] = self._trade_pennying(product, state)
 
-            orders: List[Order] = []
-            depth = state.order_depths.get(product)
-            if depth is None:
-                result[product] = orders
-                continue
-
-            asks = sorted(depth.sell_orders.items())
-            bids = sorted(depth.buy_orders.items(), reverse=True)
-            best_ask, _ = asks[0] if asks else (None, None)
-            best_bid, _ = bids[0] if bids else (None, None)
-            ask_2, _ = asks[1] if len(asks) > 1 else (None, None)
-            bid_2, _ = bids[1] if len(bids) > 1 else (None, None)
-
-            # wall mid: average of level-2 quotes
-            if bid_2 is None or ask_2 is None:
-                result[product] = orders
-                continue
-            mid = (bid_2 + ask_2) / 2
-
-            limit = self.POSITION_LIMIT[product]
-            position = state.position.get(product, 0)
-
-            fair = mid + drift_bias - inventory_skew * (position - target_position)
-
-            # penny each side independently if quote is at least edge_pct from fair
-            if (best_bid is not None
-                    and (fair - (best_bid + 1)) / fair * 100 >= edge_pct
-                    and position < limit):
-                orders.append(buy(product, best_bid + 1, limit - position))
-
-            if (best_ask is not None
-                    and ((best_ask - 1) - fair) / fair * 100 >= edge_pct
-                    and position > -limit):
-                orders.append(sell(product, best_ask - 1, limit + position))
-
-            result[product] = orders
+        for product in self.COPYING_PRODUCTS:
+            result[product] = self._trade_copying(product, state)
 
         conversions = 0
         trader_data = ""
         logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
+
+    def _trade_pennying(self, product: str, state: TradingState) -> List[Order]:
+        p = self.PARAMS[product]
+        edge_pct = p["edge_pct"]
+        inventory_skew = p["inventory_skew"]
+        drift_bias = p["drift_bias"]
+        target_position = p["target_position"]
+
+        orders: List[Order] = []
+        depth = state.order_depths.get(product)
+        if depth is None:
+            return orders
+
+        asks = sorted(depth.sell_orders.items())
+        bids = sorted(depth.buy_orders.items(), reverse=True)
+        best_ask, _ = asks[0] if asks else (None, None)
+        best_bid, _ = bids[0] if bids else (None, None)
+        ask_2, _ = asks[1] if len(asks) > 1 else (None, None)
+        bid_2, _ = bids[1] if len(bids) > 1 else (None, None)
+
+        # wall mid: average of level-2 quotes
+        if bid_2 is None or ask_2 is None:
+            return orders
+        mid = (bid_2 + ask_2) / 2
+
+        limit = self.POSITION_LIMIT[product]
+        position = state.position.get(product, 0)
+
+        fair = mid + drift_bias - inventory_skew * (position - target_position)
+
+        # penny each side independently if quote is at least edge_pct from fair
+        if (best_bid is not None
+                and (fair - (best_bid + 1)) / fair * 100 >= edge_pct
+                and position < limit):
+            orders.append(buy(product, best_bid + 1, limit - position))
+
+        if (best_ask is not None
+                and ((best_ask - 1) - fair) / fair * 100 >= edge_pct
+                and position > -limit):
+            orders.append(sell(product, best_ask - 1, limit + position))
+
+        return orders
+
+    def _trade_copying(self, product: str, state: TradingState) -> List[Order]:
+        orders: List[Order] = []
+        depth = state.order_depths.get(product)
+        if depth is None:
+            return orders
+
+        frontrun_ratio = self.PARAMS[product]["frontrun_ratio"]
+        limit = self.POSITION_LIMIT[product]
+
+        best_bid = max(depth.buy_orders.keys()) if depth.buy_orders else None
+        best_ask = min(depth.sell_orders.keys()) if depth.sell_orders else None
+        if best_bid is None or best_ask is None:
+            return orders
+
+        position = state.position.get(product, 0)
+        buy_capacity = limit - position
+        sell_capacity = limit + position
+
+        market_trades = state.market_trades.get(product, [])
+        if not market_trades:
+            return orders
+
+        order = market_trades[0]
+        qty = int(abs(order.quantity) * frontrun_ratio)
+        if order.quantity < 0:
+            qty = min(qty, buy_capacity)
+            if qty > 0:
+                orders.append(buy(product, best_bid + 1, qty))
+        else:
+            qty = min(qty, sell_capacity)
+            if qty > 0:
+                orders.append(sell(product, best_ask - 1, qty))
+
+        return orders

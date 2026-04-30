@@ -11,7 +11,10 @@ class Logger:
         self.logs += sep.join(map(str, objects)) + end
 
     def flush(self, state: TradingState, orders, conversions: int, trader_data: str) -> None:
+        traded = set(orders.keys()) if orders else set()
         for symbol, depth in state.order_depths.items():
+            if symbol not in traded:
+                continue
             bids = sorted(depth.buy_orders.items(), reverse=True)
             asks = sorted(depth.sell_orders.items())
 
@@ -76,68 +79,76 @@ def sell(product: str, price: int, quantity: int) -> Order:
     return Order(product, price, -abs(quantity))
 
 
+DEFAULT_LIMIT = 10
+OXYGEN_MIN_SPREAD = 8
+OXYGEN_FADE_TICKS = 2
+
+OXYGEN_PRODUCTS = {
+    "OXYGEN_SHAKE_CHOCOLATE",
+    "OXYGEN_SHAKE_EVENING_BREATH",
+    "OXYGEN_SHAKE_GARLIC",
+    "OXYGEN_SHAKE_MORNING_BREATH",
+}
+
+# Per-product long bias. Fade unwinds toward target_pos instead of 0,
+# but only encourages moving TOWARD target (no overshoot pressure).
+OXYGEN_TARGET_POS: Dict[str, int] = {
+    "OXYGEN_SHAKE_GARLIC": 10,
+}
+
+
+def penny(
+    product: str,
+    depth: OrderDepth,
+    position: int,
+    limit: int,
+    min_spread: int,
+    fade_ticks: int = 0,
+    target_pos: int = 0,
+) -> List[Order]:
+    bids = sorted(depth.buy_orders.items(), reverse=True)
+    asks = sorted(depth.sell_orders.items())
+    if not bids or not asks:
+        return []
+
+    best_bid = bids[0][0]
+    best_ask = asks[0][0]
+    if best_ask - best_bid < min_spread:
+        return []
+
+    # Asymmetric fade around target_pos: only encourage moving toward
+    # target, never past it.
+    delta = position - target_pos
+    if target_pos > 0:
+        delta = min(0, delta)
+    elif target_pos < 0:
+        delta = max(0, delta)
+    shift = round(fade_ticks * delta / limit) if limit > 0 else 0
+    buy_price = best_bid + 1 - shift
+    sell_price = best_ask - 1 - shift
+
+    orders: List[Order] = []
+    buy_capacity = limit - position
+    sell_capacity = limit + position
+    if buy_capacity > 0:
+        orders.append(buy(product, buy_price, buy_capacity))
+    if sell_capacity > 0:
+        orders.append(sell(product, sell_price, sell_capacity))
+    return orders
+
+
 class Trader:
-    GALAXY_PRODUCTS = [
-        "GALAXY_SOUNDS_DARK_MATTER",
-        "GALAXY_SOUNDS_BLACK_HOLES",
-        "GALAXY_SOUNDS_PLANETARY_RINGS",
-        "GALAXY_SOUNDS_SOLAR_WINDS",
-        "GALAXY_SOUNDS_SOLAR_FLAMES",
-    ]
-
-    POSITION_LIMIT: Dict[str, int] = {p: 10 for p in GALAXY_PRODUCTS}
-
-    PARAMS = {
-        "edge_pct": 0.06,    # min % edge each penny quote needs vs the wall-mid fair (≈ spread_thresh=6 at ~10000 mid)
-        "fade": 0.1,         # fair -= fade * position; positive position lowers fair, 0.1 is theoretically better on backtest but higher variance
-    }
-
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
-        logger.print("positions:", state.position)
 
-        edge_pct = self.PARAMS["edge_pct"]
-        fade = self.PARAMS["fade"]
-
-        for product in self.GALAXY_PRODUCTS:
-            orders: List[Order] = []
-            depth = state.order_depths.get(product)
-            if depth is None:
-                result[product] = orders
+        for product, depth in state.order_depths.items():
+            if product not in OXYGEN_PRODUCTS:
                 continue
-
-            asks = sorted(depth.sell_orders.items())
-            bids = sorted(depth.buy_orders.items(), reverse=True)
-            best_ask, _ = asks[0] if asks else (None, None)
-            best_bid, _ = bids[0] if bids else (None, None)
-            ask_2, _ = asks[1] if len(asks) > 1 else (None, None)
-            bid_2, _ = bids[1] if len(bids) > 1 else (None, None)
-
-            # wall mid: average of level-2 quotes
-            if bid_2 is not None and ask_2 is not None:
-                fair = (bid_2 + ask_2) / 2
-            else:
-                result[product] = orders
-                continue
-
-            limit = self.POSITION_LIMIT[product]
             position = state.position.get(product, 0)
-
-            # fade fair by position so we're more willing to sell when long, buy when short
-            fair -= fade * position
-
-            # penny each side independently if quote is at least edge_pct from fair
-            if (best_bid is not None
-                    and (fair - (best_bid + 1)) / fair * 100 >= edge_pct
-                    and position < limit):
-                orders.append(buy(product, best_bid + 1, limit - position))
-
-            if (best_ask is not None
-                    and ((best_ask - 1) - fair) / fair * 100 >= edge_pct
-                    and position > -limit):
-                orders.append(sell(product, best_ask - 1, limit + position))
-
-            result[product] = orders
+            target = OXYGEN_TARGET_POS.get(product, 0)
+            orders = penny(product, depth, position, DEFAULT_LIMIT, OXYGEN_MIN_SPREAD, OXYGEN_FADE_TICKS, target)
+            if orders:
+                result[product] = orders
 
         conversions = 0
         trader_data = ""
